@@ -1,0 +1,52 @@
+%%{init: {'theme':'base','flowchart':{'curve':'linear','nodeSpacing':36,'rankSpacing':48}, 'themeVariables': {'fontSize':'16px','fontFamily':'Arial','background':'#ffffff','primaryColor':'#eff6ff','primaryTextColor':'#0f172a','primaryBorderColor':'#2563eb','lineColor':'#475569','secondaryColor':'#fef3c7','tertiaryColor':'#ffffff'}}}%%
+flowchart TB
+  Browser["Browser / Player UI"]
+
+  subgraph Frontend["Frontend / UI"]
+    Router["Router"]
+    Pages["Pages"]
+    Components["Components"]
+    API["REST API"]
+    WS["WebSocket Client"]
+  end
+
+  subgraph Backend["Backend / Server"]
+    SocketServer["Socket.IO Server"]
+    FlaskRest["Flask REST"]
+    GameCore["Game Logic"]
+    Notification["Notification"]
+    Parser["Parser"]
+    Events["Events"]
+  end
+
+  subgraph StateFlow["State / Event Flow"]
+    StateManager["State Manager"]
+    Redis["Redis"]
+  end
+
+  Browser --> Router --> Pages --> Components
+  Components --> API
+  Components --> WS
+
+  WS --> SocketServer
+  API --> FlaskRest
+  SocketServer --> StateManager
+  StateManager --> GameCore
+  GameCore --> Notification
+  StateManager --> Parser
+  StateManager --> Events
+  StateManager --> Redis
+  SocketServer -->|emit GAME_STATE / GAME_OVER| Browser
+
+  Browser -->|join room / play / draw| WS
+  WS -->|PLAYER_JOIN / GAME_PLAY / GAME_DRAW| SocketServer
+  SocketServer -->|update state| StateManager
+  StateManager -->|broadcast state| SocketServer
+
+  classDef frontend fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a;
+  classDef backend fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a;
+  classDef stateflow fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a;
+
+  class Browser,Router,Pages,Components,API,WS frontend;
+  class SocketServer,FlaskRest,GameCore,Notification,Parser,Events backend;
+  class StateManager,Redis stateflow;
