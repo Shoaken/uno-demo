@@ -74,6 +74,7 @@ This repository is a teaching project for teamwork and realistic code delivery. 
 - Make changes that are easy to split into reviewable pull requests.
 - Keep diffs narrow and focused on one concern.
 - If a task spans server and web, update both sides in a coordinated way.
+- Require a pull request for every change, and wait for manager approval before merging into the main branch.
 - If a requirement is unclear, make the least surprising choice and document the assumption in code or in the PR description.
 - Use Conventional Commits for commit messages and PR titles when possible:
 	- `feat:` for new capabilities.
