@@ -3,6 +3,7 @@ GAME_START = "game::start"
 GAME_STATE = "game::state"
 GAME_PLAY = "game::play"
 GAME_DRAW = "game::draw"
+GAME_UNO = "game::uno"
 GAME_OVER = "game::over"
 
 PLAYER_JOIN = "player::join"

@@ -113,15 +113,23 @@ class RoomManager:
         room.game.draw(player_id)
         return [{"event": events.GAME_STATE, "data": room.game.get_state()}]
 
-    def play(self, room_id: str, player_id: str, card_id: str) -> List[dict]:
+    def play(self, room_id: str, player_id: str, card_id: str, chosen_color: Optional[str] = None) -> List[dict]:
         room = self.rooms.get(room_id)
         if room is None or room.game is None:
             raise ValueError("game does not exist")
 
-        game_over = room.game.play(player_id, card_id)
+        game_over = room.game.play(player_id, card_id, chosen_color=chosen_color)
         payload = [{"event": events.GAME_STATE, "data": room.game.get_state()}]
 
         if game_over is not None:
             payload.append({"event": events.GAME_OVER, "data": game_over})
 
         return payload
+
+    def call_uno(self, room_id: str, player_id: str) -> List[dict]:
+        room = self.rooms.get(room_id)
+        if room is None or room.game is None:
+            raise ValueError("game does not exist")
+
+        room.game.call_uno(player_id)
+        return [{"event": events.GAME_STATE, "data": room.game.get_state()}]
