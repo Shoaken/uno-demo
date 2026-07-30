@@ -1,6 +1,7 @@
 GAME_ROOM = "game::room"
 GAME_START = "game::start"
 GAME_STATE = "game::state"
+GAME_NOTIFY = "game::notify"
 GAME_PLAY = "game::play"
 GAME_DRAW = "game::draw"
 GAME_UNO = "game::uno"
