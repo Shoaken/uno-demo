@@ -80,7 +80,8 @@ class RoomManager:
         token = uuid.uuid4().hex
         room.reconnect_tokens[host.id] = token
         self.rooms[room_id] = room
-        return self._events_for_room(room), {"reconnect_token": token, "player_id": host.id}
+        # return only event payloads to preserve RoomManager contract
+        return self._events_for_room(room)
 
     def join_room(self, room_id: str, player_name: str) -> List[dict]:
         room = self.rooms.get(room_id)
@@ -94,12 +95,12 @@ class RoomManager:
             raise ValueError("player name already taken")
 
         room.players[player.id] = player
-        # generate reconnect token for new player and return it to caller (do not broadcast token)
+        # generate reconnect token for new player and return only events
         import uuid
 
         token = uuid.uuid4().hex
         room.reconnect_tokens[player.id] = token
-        return self._events_for_room(room), {"reconnect_token": token, "player_id": player.id}
+        return self._events_for_room(room)
 
     def set_ready(self, room_id: str, player_id: str, ready: bool) -> List[dict]:
         room = self.rooms.get(room_id)

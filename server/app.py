@@ -25,10 +25,6 @@ def _emit_payloads(room_id: str, payloads: List[dict]) -> None:
 
 
 def _json_response(payloads: List[dict], status_code: int = 200):
-    # payloads may be a tuple (events, meta)
-    if isinstance(payloads, tuple):
-        events_part, meta = payloads
-        return jsonify({"events": events_part, "meta": meta}), status_code
     return jsonify({"events": payloads}), status_code
 
 
@@ -106,6 +102,23 @@ def _handle_http_room_action(action_name: str):
             payloads = room_manager.call_uno(data["room_id"], data["player_id"])
         else:
             raise ValueError(f"unsupported action: {action_name}")
+        # if create/join, include reconnect token meta in HTTP response for the caller
+        if action_name in ("create", "join"):
+            room_id = data["room_id"]
+            if action_name == "create":
+                player_id = f"player-{data['host_name']}"
+            else:
+                player_id = f"player-{data['player_name']}"
+
+            room = room_manager.rooms.get(room_id)
+            meta = {}
+            if room is not None:
+                token = room.reconnect_tokens.get(player_id)
+                if token:
+                    meta = {"reconnect_token": token, "player_id": player_id}
+
+            return jsonify({"events": payloads, "meta": meta}), 200
+
         return _json_response(payloads)
     except Exception as ex:
         return _room_error(ex)
@@ -210,16 +223,16 @@ def on_player_join(data: Dict[str, Any]):
             _emit_payloads(room_id, payloads)
             return
 
-        # normal join by name: create player and return a reconnect token back to the joining socket
+        # normal join by name: create player, send reconnect token to joining socket, then connect
         if not player_id and player_name:
-            result = room_manager.join_room(room_id, player_name)
-            # result may include meta with reconnect token
-            if isinstance(result, tuple):
-                _, meta = result
-                # send meta directly to joining client only
-                emit("session::info", meta)
-            # now connect the player which will broadcast the updated room snapshot
+            payloads = room_manager.join_room(room_id, player_name)
+            # send reconnect token meta directly to joining client
             player_id = f"player-{player_name}"
+            token = room.reconnect_tokens.get(player_id)
+            if token:
+                emit("session::info", {"reconnect_token": token, "player_id": player_id})
+
+            # now connect the player which will broadcast the updated room snapshot
             payloads = room_manager.connect_player(room_id, player_id, request.sid)
             _emit_payloads(room_id, payloads)
             return

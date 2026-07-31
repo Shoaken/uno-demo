@@ -607,3 +607,75 @@ def test_http_game_over_payload_contains_winner_details():
         "allow_immediate_play_after_draw",
     }
     assert over == {"reason": GameOverReason.WON.value, "winner": current_player_id}
+
+
+def test_http_create_and_join_return_reconnect_meta():
+    client = app.test_client()
+    create_resp = _http_json(client, "/api/rooms/create", {"room_id": "r-meta", "host_name": "alice"})
+    assert "meta" in create_resp
+    assert "reconnect_token" in create_resp["meta"]
+    assert "player_id" in create_resp["meta"]
+
+    join_resp = _http_json(client, "/api/rooms/join", {"room_id": "r-meta", "player_name": "bob"})
+    assert "meta" in join_resp
+    assert "reconnect_token" in join_resp["meta"]
+    assert join_resp["meta"]["player_id"] == _player_id("bob")
+
+
+def test_http_list_and_get_room_endpoints():
+    client = app.test_client()
+    _http_json(client, "/api/rooms/create", {"room_id": "r-list", "host_name": "alice"})
+    _http_json(client, "/api/rooms/join", {"room_id": "r-list", "player_name": "bob"})
+
+    list_resp = _http_get(client, "/api/rooms")
+    assert any(r["room_id"] == "r-list" for r in list_resp["rooms"])
+
+    get_resp = client.get("/api/rooms/r-list")
+    assert get_resp.status_code == 200
+    body = get_resp.get_json()
+    assert "room" in body
+    assert body["room"]["host_id"] == _player_id("alice")
+    assert any(p["id"] == _player_id("bob") for p in body["room"]["players"])
+
+
+def test_http_leave_transfers_host_and_removes_room_when_empty():
+    client = app.test_client()
+    # create room with three players
+    _http_json(client, "/api/rooms/create", {"room_id": "r-leave", "host_name": "alice"})
+    _http_json(client, "/api/rooms/join", {"room_id": "r-leave", "player_name": "bob"})
+    _http_json(client, "/api/rooms/join", {"room_id": "r-leave", "player_name": "charlie"})
+
+    # alice leaves (host leaves)
+    resp = client.post("/api/rooms/leave", json={"room_id": "r-leave", "player_id": _player_id("alice")})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    # ensure alice not in players and host changed
+    room = room_manager.rooms.get("r-leave")
+    assert room is not None
+    assert _player_id("alice") not in room.players
+    assert room.host_id != _player_id("alice")
+
+    # remove remaining players
+    client.post("/api/rooms/leave", json={"room_id": "r-leave", "player_id": _player_id("bob")})
+    client.post("/api/rooms/leave", json={"room_id": "r-leave", "player_id": _player_id("charlie")})
+
+    # now room should be removed
+    get_resp = client.get("/api/rooms/r-leave")
+    assert get_resp.status_code == 404
+
+
+def test_socket_reconnect_with_invalid_token_emits_notify(monkeypatch):
+    client = app.test_client()
+    room_id = "r-invalid-token"
+
+    _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+
+    emitted = _capture_emits(monkeypatch)
+    # attempt reconnect with wrong token
+    reconnect_socket = socketio.test_client(app, flask_test_client=app.test_client())
+    reconnect_socket.emit(events.PLAYER_JOIN, {"room": room_id, "player_id": _player_id("bob"), "reconnect_token": "wrongtoken"})
+
+    notify = _event_payloads(emitted, events.GAME_NOTIFY)
+    assert len(notify) == 1
+    assert "invalid reconnect token" in notify[0]["data"]["message"]
