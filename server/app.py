@@ -234,7 +234,8 @@ def on_player_join(data: Dict[str, Any]):
             # send reconnect token meta directly to joining client if available
             token = room.reconnect_tokens.get(candidate_id)
             if token:
-                emit("session::info", {"reconnect_token": token, "player_id": candidate_id})
+                # explicitly target the joining socket to ensure the test client receives it
+                emit(events.SESSION_INFO, {"reconnect_token": token, "player_id": candidate_id}, to=request.sid)
 
             # now connect the player which will broadcast the updated room snapshot
             payloads = room_manager.connect_player(room_id, candidate_id, request.sid)
