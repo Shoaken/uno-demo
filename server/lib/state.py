@@ -13,12 +13,15 @@ class RoomState:
     host_id: str
     players: Dict[str, Player] = field(default_factory=dict)
     ready_player_ids: set[str] = field(default_factory=set)
+    connected_player_ids: set[str] = field(default_factory=set)
+    reconnect_tokens: Dict[str, str] = field(default_factory=dict)
     game: Optional[Game] = None
 
 
 class RoomManager:
     def __init__(self):
         self.rooms: Dict[str, RoomState] = {}
+        self.socket_sessions: Dict[str, tuple[str, str]] = {}
 
     def _events_for_room(self, room: RoomState) -> List[dict]:
         return [
@@ -28,9 +31,42 @@ class RoomManager:
                     "players": [player.__dict__ for player in room.players.values()],
                     "host_id": room.host_id,
                     "ready": {pid: pid in room.ready_player_ids for pid in room.players},
+                    "connected": {pid: pid in room.connected_player_ids for pid in room.players},
                 },
             }
         ]
+
+    def _game_state_event(self, room: RoomState) -> List[dict]:
+        if room.game is None:
+            return []
+
+        return [{"event": events.GAME_STATE, "data": room.game.get_state()}]
+
+    def connect_player(self, room_id: str, player_id: str, socket_id: Optional[str] = None) -> List[dict]:
+        room = self.rooms.get(room_id)
+        if room is None:
+            raise ValueError("room does not exist")
+        if player_id not in room.players:
+            raise ValueError("player not in room")
+
+        room.connected_player_ids.add(player_id)
+        if socket_id is not None:
+            self.socket_sessions[socket_id] = (room_id, player_id)
+
+        return self._events_for_room(room) + self._game_state_event(room)
+
+    def disconnect_socket(self, socket_id: str) -> Optional[tuple[str, str, List[dict]]]:
+        session = self.socket_sessions.pop(socket_id, None)
+        if session is None:
+            return None
+
+        room_id, player_id = session
+        room = self.rooms.get(room_id)
+        if room is None:
+            return None
+
+        room.connected_player_ids.discard(player_id)
+        return room_id, player_id, self._events_for_room(room)
 
     def create_room(self, room_id: str, host_name: str) -> List[dict]:
         if room_id in self.rooms:
@@ -38,8 +74,13 @@ class RoomManager:
 
         host = Player(id=f"player-{host_name}", name=host_name)
         room = RoomState(room_id=room_id, host_id=host.id, players={host.id: host})
+        # generate reconnect token for host
+        import uuid
+
+        token = uuid.uuid4().hex
+        room.reconnect_tokens[host.id] = token
         self.rooms[room_id] = room
-        return self._events_for_room(room)
+        return self._events_for_room(room), {"reconnect_token": token, "player_id": host.id}
 
     def join_room(self, room_id: str, player_name: str) -> List[dict]:
         room = self.rooms.get(room_id)
@@ -53,7 +94,12 @@ class RoomManager:
             raise ValueError("player name already taken")
 
         room.players[player.id] = player
-        return self._events_for_room(room)
+        # generate reconnect token for new player and return it to caller (do not broadcast token)
+        import uuid
+
+        token = uuid.uuid4().hex
+        room.reconnect_tokens[player.id] = token
+        return self._events_for_room(room), {"reconnect_token": token, "player_id": player.id}
 
     def set_ready(self, room_id: str, player_id: str, ready: bool) -> List[dict]:
         room = self.rooms.get(room_id)
@@ -66,6 +112,30 @@ class RoomManager:
             room.ready_player_ids.add(player_id)
         else:
             room.ready_player_ids.discard(player_id)
+
+        return self._events_for_room(room)
+
+    def leave_room(self, room_id: str, player_id: str) -> List[dict]:
+        room = self.rooms.get(room_id)
+        if room is None:
+            raise ValueError("room does not exist")
+        if player_id not in room.players:
+            raise ValueError("player not in room")
+
+        # remove player
+        del room.players[player_id]
+        room.ready_player_ids.discard(player_id)
+        room.connected_player_ids.discard(player_id)
+        room.reconnect_tokens.pop(player_id, None)
+
+        # if no players remain, remove room
+        if not room.players:
+            del self.rooms[room_id]
+            return []
+
+        # if host left, pick a new host
+        if room.host_id == player_id:
+            room.host_id = next(iter(room.players))
 
         return self._events_for_room(room)
 

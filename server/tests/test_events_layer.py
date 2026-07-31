@@ -26,6 +26,12 @@ def _http_json(client, path: str, payload: dict):
     return response.get_json()
 
 
+def _http_get(client, path: str):
+    response = client.get(path)
+    assert response.status_code == 200, response.get_json()
+    return response.get_json()
+
+
 def _http_json_error(client, path: str, payload: dict):
     response = client.post(path, json=payload)
     assert response.status_code == 400
@@ -37,6 +43,8 @@ def _http_json_error(client, path: str, payload: dict):
 def _attach_socket_client(name: str, room_id: str):
     client = socketio.test_client(app, flask_test_client=app.test_client())
     client.emit(events.PLAYER_JOIN, {"room": room_id, "name": name})
+    # consume session::info if present
+    client.get_received()
     return client
 
 
@@ -118,6 +126,7 @@ def test_http_room_actions_reject_invalid_input_and_missing_room():
 
     body = _http_json_error(client, "/api/rooms/join", {"room_id": "missing", "player_name": "bob"})
     assert "does not exist" in body["error"]
+    assert body["code"] == "room_not_found"
 
     body = _http_json_error(client, "/api/rooms/draw", {"room_id": "missing", "player_id": "player-bob"})
     assert "game does not exist" in body["error"]
@@ -127,6 +136,7 @@ def test_http_room_actions_reject_invalid_input_and_missing_room():
 
     body = _http_json_error(client, "/api/rooms/uno", {"room_id": "missing", "player_id": "player-bob"})
     assert "game does not exist" in body["error"]
+    assert body["code"] == "game_not_started"
 
     _http_json(client, "/api/rooms/create", {"room_id": "room-error", "host_name": "alice"})
 
@@ -141,6 +151,7 @@ def test_http_room_actions_reject_invalid_input_and_missing_room():
 
     body = _http_json_error(client, "/api/rooms/create", {"room_id": "room-error", "host_name": "alice2"})
     assert "already exists" in body["error"]
+    assert body["code"] == "room_exists"
 
     body = _http_json_error(client, "/api/rooms/join", {"room_id": "room-error", "player_name": "alice"})
     assert "already taken" in body["error"]
@@ -150,6 +161,7 @@ def test_http_room_actions_reject_invalid_input_and_missing_room():
 
     body = _http_json_error(client, "/api/rooms/start", {"room_id": "room-error", "started_by_player_id": "player-alice"})
     assert "not enough players" in body["error"]
+    assert body["code"] == "not_enough_players"
 
 
 def test_http_room_actions_reject_missing_parameters_and_invalid_chosen_color():
@@ -182,6 +194,7 @@ def test_http_room_actions_reject_missing_parameters_and_invalid_chosen_color():
         },
     )
     assert "chosen color" in body["error"]
+    assert body["code"] == "invalid_chosen_color"
 
 
 def test_http_and_socket_draw_keep_immediate_play_disabled(monkeypatch):
@@ -225,6 +238,7 @@ def test_socket_player_ready_updates_room_state_and_broadcasts_room_snapshot(mon
     assert len(ready_events) == 1
     assert ready_events[0]["to"] == room_id
     assert ready_events[0]["data"]["ready"] == {"player-alice": True, "player-bob": False}
+    assert ready_events[0]["data"]["connected"]["player-alice"] is True
     assert _player_id("alice") in room_manager.rooms[room_id].ready_player_ids
 
     emitted.clear()
@@ -248,6 +262,7 @@ def test_socket_player_join_is_idempotent_and_reports_missing_room(monkeypatch):
     join_events = _event_payloads(emitted, events.GAME_ROOM)
     assert len(join_events) == 1
     assert join_events[0]["to"] == room_id
+    assert join_events[0]["data"]["connected"]["player-bob"] is True
     assert len(room_manager.rooms[room_id].players) == 2
 
     emitted.clear()
@@ -262,7 +277,63 @@ def test_socket_player_join_is_idempotent_and_reports_missing_room(monkeypatch):
     notify_events = _event_payloads(emitted, events.GAME_NOTIFY)
     assert len(notify_events) == 1
     assert notify_events[0]["data"]["type"] == "error"
+    assert notify_events[0]["data"]["code"] == "room_not_found"
     assert "room does not exist" in notify_events[0]["data"]["message"]
+
+
+def test_socket_disconnect_broadcasts_leave_and_marks_player_offline(monkeypatch):
+    client = app.test_client()
+    room_id = "room-disconnect"
+
+    _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    alice_socket = _attach_socket_client("alice", room_id)
+    emitted = _capture_emits(monkeypatch)
+
+    alice_socket.disconnect()
+
+    leave_events = _event_payloads(emitted, events.PLAYER_LEAVE)
+    assert len(leave_events) == 1
+    assert leave_events[0]["to"] == room_id
+    assert leave_events[0]["data"] == {"room": room_id, "player_id": _player_id("alice")}
+
+    room_snapshot_events = _event_payloads(emitted, events.GAME_ROOM)
+    assert len(room_snapshot_events) == 1
+    assert room_snapshot_events[0]["data"]["connected"]["player-alice"] is False
+    assert _player_id("alice") not in room_manager.rooms[room_id].connected_player_ids
+
+
+def test_socket_rejoin_restores_room_and_game_state(monkeypatch):
+    client = app.test_client()
+    room_id = "room-reconnect"
+
+    _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("alice"), "ready": True})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("bob"), "ready": True})
+
+    alice_socket = _attach_socket_client("alice", room_id)
+    bob_socket = _attach_socket_client("bob", room_id)
+    emitted = _capture_emits(monkeypatch)
+
+    alice_socket.emit(events.GAME_START, {"room": room_id, "started_by_player_id": _player_id("alice"), "hand_size": 2, "seed": 31})
+    emitted.clear()
+
+    bob_socket.disconnect()
+    emitted.clear()
+
+    reconnect_socket = socketio.test_client(app, flask_test_client=app.test_client())
+    # attempt reconnect using token
+    # retrieve token from room_manager
+    token = room_manager.rooms[room_id].reconnect_tokens[_player_id("bob")]
+    reconnect_socket.emit(events.PLAYER_JOIN, {"room": room_id, "player_id": _player_id("bob"), "reconnect_token": token})
+
+    room_events = _event_payloads(emitted, events.GAME_ROOM)
+    state_events = _event_payloads(emitted, events.GAME_STATE)
+    assert len(room_events) == 1
+    assert len(state_events) == 1
+    assert room_events[0]["data"]["connected"]["player-bob"] is True
+    assert state_events[0]["data"] == room_manager.rooms[room_id].game.get_state()
+
 
 
 def test_socket_player_ready_rejects_missing_room_and_supports_unready_toggle(monkeypatch):

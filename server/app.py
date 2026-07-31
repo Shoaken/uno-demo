@@ -25,11 +25,55 @@ def _emit_payloads(room_id: str, payloads: List[dict]) -> None:
 
 
 def _json_response(payloads: List[dict], status_code: int = 200):
+    # payloads may be a tuple (events, meta)
+    if isinstance(payloads, tuple):
+        events_part, meta = payloads
+        return jsonify({"events": events_part, "meta": meta}), status_code
     return jsonify({"events": payloads}), status_code
 
 
+def _error_code(message: str) -> str:
+    if message == "room does not exist":
+        return "room_not_found"
+    if message == "game does not exist":
+        return "game_not_started"
+    if message == "room already exists":
+        return "room_exists"
+    if message == "game already started":
+        return "game_already_started"
+    if message == "only host can start the game":
+        return "forbidden_start"
+    if message == "not enough players":
+        return "not_enough_players"
+    if message == "all players must be ready before game starts":
+        return "players_not_ready"
+    if message == "player name already taken":
+        return "player_taken"
+    if message == "player not in room":
+        return "player_not_in_room"
+    if "not player's turn" in message:
+        return "not_current_player"
+    if message == "card not found in player's hand":
+        return "card_not_found"
+    if "does not match top card" in message:
+        return "illegal_play"
+    if "chosen color" in message:
+        return "invalid_chosen_color"
+    if "wild cards require a chosen color" in message:
+        return "missing_chosen_color"
+    if "UNO can only be called" in message:
+        return "invalid_uno_call"
+    return "unknown_error"
+
+
+def _notify_error(ex: Exception):
+    message = str(ex)
+    return {"type": "error", "code": _error_code(message), "message": message}
+
+
 def _room_error(ex: Exception):
-    return jsonify({"error": str(ex)}), 400
+    message = str(ex)
+    return jsonify({"error": message, "code": _error_code(message)}), 400
 
 
 def _handle_http_room_action(action_name: str):
@@ -107,11 +151,49 @@ def call_uno():
     return _handle_http_room_action("uno")
 
 
+@app.get("/api/rooms")
+def list_rooms():
+    rooms = []
+    for rid, room in room_manager.rooms.items():
+        rooms.append({
+            "room_id": rid,
+            "host_id": room.host_id,
+            "players": [p.__dict__ for p in room.players.values()],
+        })
+    return jsonify({"rooms": rooms}), 200
+
+
+@app.get("/api/rooms/<room_id>")
+def get_room(room_id: str):
+    room = room_manager.rooms.get(room_id)
+    if room is None:
+        return jsonify({"error": "room does not exist"}), 404
+
+    data = {
+        "players": [player.__dict__ for player in room.players.values()],
+        "host_id": room.host_id,
+        "ready": {pid: pid in room.ready_player_ids for pid in room.players},
+        "connected": {pid: pid in room.connected_player_ids for pid in room.players},
+    }
+    return jsonify({"room": data}), 200
+
+
+@app.post("/api/rooms/leave")
+def leave_room():
+    data = _json_data()
+    try:
+        payloads = room_manager.leave_room(data["room_id"], data["player_id"])
+        return _json_response(payloads)
+    except Exception as ex:
+        return _room_error(ex)
+
+
 @socketio.on(events.PLAYER_JOIN)
 def on_player_join(data: Dict[str, Any]):
     room_id = data["room"]
-    player_name = data["name"]
-    player_id = f"player-{player_name}"
+    player_name = data.get("name")
+    player_id = data.get("player_id") or (f"player-{player_name}" if player_name else None)
+    reconnect_token = data.get("reconnect_token")
 
     try:
         room = room_manager.rooms.get(room_id)
@@ -119,15 +201,43 @@ def on_player_join(data: Dict[str, Any]):
             raise ValueError("room does not exist")
 
         socket_join_room(room_id)
-
-        if player_id not in room.players:
-            payloads = room_manager.join_room(room_id, player_name)
+        # handle reconnect using player_id + token
+        if player_id and reconnect_token:
+            expected = room.reconnect_tokens.get(player_id)
+            if expected != reconnect_token:
+                raise ValueError("invalid reconnect token")
+            payloads = room_manager.connect_player(room_id, player_id, request.sid)
             _emit_payloads(room_id, payloads)
             return
 
-        emit(events.GAME_ROOM, room_manager._events_for_room(room)[0]["data"], to=room_id)
+        # normal join by name: create player and return a reconnect token back to the joining socket
+        if not player_id and player_name:
+            result = room_manager.join_room(room_id, player_name)
+            # result may include meta with reconnect token
+            if isinstance(result, tuple):
+                _, meta = result
+                # send meta directly to joining client only
+                emit("session::info", meta)
+            # now connect the player which will broadcast the updated room snapshot
+            player_id = f"player-{player_name}"
+            payloads = room_manager.connect_player(room_id, player_id, request.sid)
+            _emit_payloads(room_id, payloads)
+            return
+
+        raise ValueError("missing player identification")
     except Exception as ex:
-        emit(events.GAME_NOTIFY, {"type": "error", "message": str(ex)})
+        emit(events.GAME_NOTIFY, _notify_error(ex))
+
+
+@socketio.on("disconnect")
+def on_disconnect():
+    session = room_manager.disconnect_socket(request.sid)
+    if session is None:
+        return
+
+    room_id, player_id, payloads = session
+    emit(events.PLAYER_LEAVE, {"room": room_id, "player_id": player_id}, to=room_id)
+    _emit_payloads(room_id, payloads)
 
 
 @socketio.on(events.PLAYER_READY)
@@ -136,7 +246,7 @@ def on_player_ready(data: Dict[str, Any]):
         payloads = room_manager.set_ready(data["room"], data["player_id"], bool(data.get("ready", True)))
         _emit_payloads(data["room"], payloads)
     except Exception as ex:
-        emit(events.GAME_NOTIFY, {"type": "error", "message": str(ex)})
+        emit(events.GAME_NOTIFY, _notify_error(ex))
 
 
 @socketio.on(events.GAME_START)
@@ -151,7 +261,7 @@ def on_game_start(data: Dict[str, Any]):
         )
         _emit_payloads(data["room"], payloads)
     except Exception as ex:
-        emit(events.GAME_NOTIFY, {"type": "error", "message": str(ex)})
+        emit(events.GAME_NOTIFY, _notify_error(ex))
 
 
 @socketio.on(events.GAME_DRAW)
@@ -160,7 +270,7 @@ def on_game_draw(data: Dict[str, Any]):
         payloads = room_manager.draw(data["room"], data["player_id"])
         _emit_payloads(data["room"], payloads)
     except Exception as ex:
-        emit(events.GAME_NOTIFY, {"type": "error", "message": str(ex)})
+        emit(events.GAME_NOTIFY, _notify_error(ex))
 
 
 @socketio.on(events.GAME_PLAY)
@@ -174,7 +284,7 @@ def on_game_play(data: Dict[str, Any]):
         )
         _emit_payloads(data["room"], payloads)
     except Exception as ex:
-        emit(events.GAME_NOTIFY, {"type": "error", "message": str(ex)})
+        emit(events.GAME_NOTIFY, _notify_error(ex))
 
 
 @socketio.on(events.GAME_UNO)
@@ -183,7 +293,7 @@ def on_game_uno(data: Dict[str, Any]):
         payloads = room_manager.call_uno(data["room"], data["player_id"])
         _emit_payloads(data["room"], payloads)
     except Exception as ex:
-        emit(events.GAME_NOTIFY, {"type": "error", "message": str(ex)})
+        emit(events.GAME_NOTIFY, _notify_error(ex))
 
 
 if __name__ == "__main__":
