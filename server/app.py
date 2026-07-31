@@ -224,17 +224,20 @@ def on_player_join(data: Dict[str, Any]):
             _emit_payloads(room_id, payloads)
             return
 
-        # normal join by name: create player, send reconnect token to joining socket, then connect
+        # normal join by name: only create the player if not already present
         if not player_id and player_name:
-            payloads = room_manager.join_room(room_id, player_name)
-            # send reconnect token meta directly to joining client
-            player_id = f"player-{player_name}"
-            token = room.reconnect_tokens.get(player_id)
+            candidate_id = f"player-{player_name}"
+            # create player via HTTP-style join only when needed
+            if candidate_id not in room.players:
+                room_manager.join_room(room_id, player_name)
+
+            # send reconnect token meta directly to joining client if available
+            token = room.reconnect_tokens.get(candidate_id)
             if token:
-                emit("session::info", {"reconnect_token": token, "player_id": player_id})
+                emit("session::info", {"reconnect_token": token, "player_id": candidate_id})
 
             # now connect the player which will broadcast the updated room snapshot
-            payloads = room_manager.connect_player(room_id, player_id, request.sid)
+            payloads = room_manager.connect_player(room_id, candidate_id, request.sid)
             _emit_payloads(room_id, payloads)
             return
 
