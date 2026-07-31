@@ -205,7 +205,8 @@ def leave_room():
 def on_player_join(data: Dict[str, Any]):
     room_id = data["room"]
     player_name = data.get("name")
-    player_id = data.get("player_id") or (f"player-{player_name}" if player_name else None)
+    # do NOT default player_id from name here — that causes the normal 'join by name' path to be skipped
+    player_id = data.get("player_id")
     reconnect_token = data.get("reconnect_token")
 
     try:
