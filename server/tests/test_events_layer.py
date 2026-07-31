@@ -335,6 +335,74 @@ def test_socket_rejoin_restores_room_and_game_state(monkeypatch):
     assert state_events[0]["data"] == room_manager.rooms[room_id].game.get_state()
 
 
+def test_socket_join_emits_session_info_to_joining_client():
+    client = app.test_client()
+    room_id = "room-session-info"
+
+    create_resp = _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    join_resp = _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+
+    # join via socket and verify session::info received
+    bob_socket = socketio.test_client(app, flask_test_client=app.test_client())
+    bob_socket.emit(events.PLAYER_JOIN, {"room": room_id, "name": "bob"})
+    received = bob_socket.get_received()
+    infos = [m for m in received if m["name"] == "session::info"]
+    assert len(infos) == 1
+    meta = join_resp.get("meta")
+    assert meta is not None
+    assert infos[0]["args"][0]["player_id"] == meta["player_id"]
+    assert infos[0]["args"][0]["reconnect_token"] == meta["reconnect_token"]
+
+
+def test_http_meta_allows_socket_reconnect(monkeypatch):
+    client = app.test_client()
+    room_id = "room-meta-reconnect"
+
+    _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    join_resp = _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+    meta = join_resp.get("meta")
+    assert meta and "reconnect_token" in meta
+
+    # attach sockets and start a game so GAME_STATE exists
+    alice_socket = _attach_socket_client("alice", room_id)
+    bob_socket = _attach_socket_client("bob", room_id)
+    emitted = _capture_emits(monkeypatch)
+
+    alice_socket.emit(events.GAME_START, {"room": room_id, "started_by_player_id": _player_id("alice"), "hand_size": 2, "seed": 31})
+    emitted.clear()
+
+    bob_socket.disconnect()
+    emitted.clear()
+
+    reconnect_socket = socketio.test_client(app, flask_test_client=app.test_client())
+    reconnect_socket.emit(events.PLAYER_JOIN, {"room": room_id, "player_id": _player_id("bob"), "reconnect_token": meta["reconnect_token"]})
+
+    room_events = _event_payloads(emitted, events.GAME_ROOM)
+    state_events = _event_payloads(emitted, events.GAME_STATE)
+    assert len(room_events) == 1
+    assert len(state_events) == 1
+    assert room_events[0]["data"]["connected"]["player-bob"] is True
+
+
+def test_leave_removes_reconnect_token():
+    client = app.test_client()
+    room_id = "room-leave-token"
+
+    _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    join_resp = _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+    meta = join_resp.get("meta")
+    assert meta and "reconnect_token" in meta
+
+    # bob leaves
+    resp = client.post("/api/rooms/leave", json={"room_id": room_id, "player_id": _player_id("bob")})
+    assert resp.status_code == 200
+
+    room = room_manager.rooms.get(room_id)
+    # token should be removed
+    if room is not None:
+        assert _player_id("bob") not in room.reconnect_tokens
+
+
 
 def test_socket_player_ready_rejects_missing_room_and_supports_unready_toggle(monkeypatch):
     client = app.test_client()
