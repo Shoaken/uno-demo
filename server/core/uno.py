@@ -229,6 +229,45 @@ class Game:
             "allow_immediate_play_after_draw": self.allow_immediate_play_after_draw,
         }
 
+    def to_snapshot(self) -> dict:
+        return {
+            "room": self.room,
+            "players": [player.__dict__ for player in self.players],
+            "hand_size": self.hand_size,
+            "allow_immediate_play_after_draw": self.allow_immediate_play_after_draw,
+            "direction": self.direction,
+            "turn_index": self.turn_index,
+            "player_drew_this_turn": self.player_drew_this_turn,
+            "last_drawn_card_id": self.last_drawn_card_id,
+            "uno_called": self.uno_called,
+            "pending_uno_player_id": self.pending_uno_player_id,
+            "draw_pile": [card.__dict__ for card in self._draw_pile],
+            "hands": {pid: [card.__dict__ for card in cards] for pid, cards in self.hands.items()},
+            "discard_pile": [card.__dict__ for card in self.discard_pile],
+        }
+
+    @classmethod
+    def from_snapshot(cls, snapshot: dict) -> "Game":
+        game = cls.__new__(cls)
+        game.room = snapshot["room"]
+        game.players = [Player(**player) for player in snapshot["players"]]
+        game.hand_size = snapshot["hand_size"]
+        game.allow_immediate_play_after_draw = snapshot["allow_immediate_play_after_draw"]
+        game.direction = snapshot["direction"]
+        game.turn_index = snapshot["turn_index"]
+        game.player_drew_this_turn = snapshot["player_drew_this_turn"]
+        game.last_drawn_card_id = snapshot["last_drawn_card_id"]
+        game.uno_called = {pid: bool(value) for pid, value in snapshot["uno_called"].items()}
+        game.pending_uno_player_id = snapshot["pending_uno_player_id"]
+        game._rng = random.Random()
+        game._draw_pile = [Card(**card) for card in snapshot["draw_pile"]]
+        game.hands = {
+            pid: [Card(**card) for card in cards]
+            for pid, cards in snapshot["hands"].items()
+        }
+        game.discard_pile = [Card(**card) for card in snapshot["discard_pile"]]
+        return game
+
     def draw(self, player_id: str) -> dict:
         self._resolve_pending_uno_penalty()
         self._validate_turn(player_id)

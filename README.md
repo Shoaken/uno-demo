@@ -57,3 +57,5 @@ Frontend structure:
 
 - This file intentionally excludes personal machine paths and local run commands.
 - Runtime and startup instructions can be added later when deployment and team workflow are finalized.
+- API and event details are documented in [API.md](API.md).
+- Optional Redis persistence can be enabled with `UNO_USE_REDIS=1` and `UNO_REDIS_URL=...`.

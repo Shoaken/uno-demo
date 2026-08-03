@@ -6,6 +6,8 @@ GAME_PLAY = "game::play"
 GAME_DRAW = "game::draw"
 GAME_UNO = "game::uno"
 GAME_OVER = "game::over"
+SESSION_INFO = "session::info"
 
 PLAYER_JOIN = "player::join"
 PLAYER_READY = "player::ready"
+PLAYER_LEAVE = "player::leave"
