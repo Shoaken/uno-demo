@@ -744,3 +744,111 @@ def test_socket_reconnect_with_invalid_token_emits_notify(monkeypatch):
     notify = _event_payloads(emitted, events.GAME_NOTIFY)
     assert len(notify) == 1
     assert "invalid reconnect token" in notify[0]["data"]["message"]
+
+
+def test_classroom_demo_smoke_flow_create_join_start_play_and_leave():
+    client = app.test_client()
+    room_id = "room-demo-smoke"
+
+    create_resp = _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    join_resp = _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("alice"), "ready": True})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("bob"), "ready": True})
+
+    start_resp = _http_json(
+        client,
+        "/api/rooms/start",
+        {"room_id": room_id, "started_by_player_id": _player_id("alice"), "hand_size": 2, "seed": 101},
+    )
+
+    game = room_manager.rooms[room_id].game
+    assert game is not None
+    current_player_id = game.get_state()["current_player_id"]
+    top_card = game.discard_pile[-1]
+    matching_card = Card(id="demo-play-card", color=top_card.color, value=top_card.value)
+    filler_card = Card(id="demo-filler-card", color="blue", value="1")
+    game.hands[current_player_id] = [matching_card, filler_card]
+
+    play_resp = _http_json(
+        client,
+        "/api/rooms/play",
+        {"room_id": room_id, "player_id": current_player_id, "card_id": matching_card.id},
+    )
+
+    assert [event["event"] for event in create_resp["events"]] == [events.GAME_ROOM]
+    assert [event["event"] for event in join_resp["events"]] == [events.GAME_ROOM]
+    assert [event["event"] for event in start_resp["events"]] == [events.GAME_START, events.GAME_STATE]
+    assert [event["event"] for event in play_resp["events"]] == [events.GAME_STATE]
+
+    _http_json(client, "/api/rooms/leave", {"room_id": room_id, "player_id": _player_id("bob")})
+    _http_json(client, "/api/rooms/leave", {"room_id": room_id, "player_id": _player_id("alice")})
+
+    assert client.get(f"/api/rooms/{room_id}").status_code == 404
+
+
+def test_room_status_reflects_host_player_and_connection_state():
+    client = app.test_client()
+    room_id = "room-status-view"
+
+    _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+
+    alice_socket = _attach_socket_client("alice", room_id)
+    bob_socket = _attach_socket_client("bob", room_id)
+
+    status_body = client.get(f"/api/rooms/{room_id}").get_json()["room"]
+    assert status_body["host_id"] == _player_id("alice")
+    assert status_body["connected"] == {"player-alice": True, "player-bob": True}
+    assert {player["id"] for player in status_body["players"]} == {_player_id("alice"), _player_id("bob")}
+
+    bob_socket.disconnect()
+    status_after_disconnect = client.get(f"/api/rooms/{room_id}").get_json()["room"]
+    assert status_after_disconnect["connected"]["player-bob"] is False
+    assert status_after_disconnect["connected"]["player-alice"] is True
+
+    alice_socket.disconnect()
+
+
+def test_demo_error_paths_cover_missing_room_duplicate_join_and_non_current_player(monkeypatch):
+    client = app.test_client()
+    room_id = "room-demo-errors"
+
+    missing_room_error = client.post("/api/rooms/join", json={"room_id": "missing-room", "player_name": "bob"})
+    assert missing_room_error.status_code == 400
+    assert missing_room_error.get_json()["code"] == "room_not_found"
+
+    _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    duplicate_join = client.post("/api/rooms/join", json={"room_id": room_id, "player_name": "alice"})
+    assert duplicate_join.status_code == 400
+    assert duplicate_join.get_json()["code"] == "player_taken"
+
+    _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("alice"), "ready": True})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("bob"), "ready": True})
+    _http_json(
+        client,
+        "/api/rooms/start",
+        {"room_id": room_id, "started_by_player_id": _player_id("alice"), "hand_size": 2, "seed": 77},
+    )
+
+    game = room_manager.rooms[room_id].game
+    assert game is not None
+    top_card = game.discard_pile[-1]
+    bad_card = Card(id="demo-bad-card", color="red", value="1")
+    game.hands[_player_id("bob")] = [bad_card]
+    game.turn_index = 0
+
+    not_current_player = client.post(
+        "/api/rooms/play",
+        json={"room_id": room_id, "player_id": _player_id("bob"), "card_id": bad_card.id},
+    )
+    assert not_current_player.status_code == 400
+    assert "not player's turn" in not_current_player.get_json()["error"]
+
+    game.hands[_player_id("alice")] = [Card(id="demo-illegal-card", color="yellow", value="9")]
+    illegal_play = client.post(
+        "/api/rooms/play",
+        json={"room_id": room_id, "player_id": _player_id("alice"), "card_id": "demo-illegal-card"},
+    )
+    assert illegal_play.status_code == 400
+    assert "does not match top card" in illegal_play.get_json()["error"]
