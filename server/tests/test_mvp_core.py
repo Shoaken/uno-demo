@@ -7,6 +7,7 @@ if str(SERVER_DIR) not in sys.path:
 
 from core.uno import Game, GameOverReason, Player
 from lib import events
+import lib.state as state_mod
 from lib.state import RoomManager
 
 
@@ -275,6 +276,67 @@ def test_room_manager_rejects_game_flow_before_start_and_duplicate_start():
         assert False, "expected duplicate start to fail"
     except ValueError as ex:
         assert "already started" in str(ex)
+
+
+def test_room_manager_supports_host_transfer_and_kick():
+    manager = RoomManager()
+    manager.create_room("room-admin", "alice")
+    manager.join_room("room-admin", "bob")
+    manager.join_room("room-admin", "charlie")
+
+    transfer_events = manager.transfer_host("room-admin", "player-alice", "player-bob")
+    assert transfer_events[0]["data"]["host_id"] == "player-bob"
+
+    kick_events = manager.kick_player("room-admin", "player-bob", "player-charlie")
+    assert kick_events[0]["data"]["host_id"] == "player-bob"
+    assert "player-charlie" not in manager.rooms["room-admin"].players
+
+
+class _FakeRedisClient:
+    def __init__(self):
+        self.data = {}
+        self.sets = {}
+
+    def sadd(self, key, value):
+        self.sets.setdefault(key, set()).add(value)
+
+    def smembers(self, key):
+        return set(self.sets.get(key, set()))
+
+    def set(self, key, value):
+        self.data[key] = value
+
+    def get(self, key):
+        return self.data.get(key)
+
+    def delete(self, key):
+        self.data.pop(key, None)
+
+    def srem(self, key, value):
+        self.sets.setdefault(key, set()).discard(value)
+
+
+def test_room_manager_can_persist_and_restore_rooms_with_redis(monkeypatch):
+    fake_client = _FakeRedisClient()
+
+    monkeypatch.setenv("UNO_USE_REDIS", "1")
+    monkeypatch.setenv("UNO_REDIS_URL", "redis://example/0")
+    monkeypatch.setattr(state_mod.redis.Redis, "from_url", lambda *args, **kwargs: fake_client)
+
+    manager = RoomManager()
+    manager.create_room("room-redis", "alice")
+    manager.join_room("room-redis", "bob")
+    manager.set_ready("room-redis", "player-alice", True)
+    manager.set_ready("room-redis", "player-bob", True)
+    manager.start_game("room-redis", "player-alice", hand_size=2, seed=21)
+
+    restored = RoomManager()
+    assert "room-redis" in restored.rooms
+    room = restored.rooms["room-redis"]
+    assert room.host_id == "player-alice"
+    assert room.game is not None
+    assert set(room.players.keys()) == {"player-alice", "player-bob"}
+    assert room.game.get_state()["current_player_id"] in {"player-alice", "player-bob"}
 
 
 def test_game_reshuffles_discard_into_draw_pile_when_draw_pile_is_empty():

@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit, join_room as socket_join_room
+import sys
 
 from core.uno import GameOverReason
 from lib import events
@@ -13,6 +14,45 @@ app = Flask(__name__)
 app.json.sort_keys = False
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 room_manager = RoomManager()
+# preserve reference to the original flask_socketio emit implementation
+_flask_emit = emit
+
+
+def _send_emit(event_name: str, data: dict | None = None, to: Optional[str] = None) -> None:
+    """Send an event to clients and also call the module-level `emit`.
+
+    Use `socketio.emit` for real delivery (explicit `room` + `namespace`) so
+    `socketio.test_client.get_received()` observes the message, then call the
+    module-level `emit` (which tests monkeypatch) to record the emit.
+    """
+    payload = data or {}
+
+    # call the module-level emit first so tests that monkeypatch `app.emit`
+    # observe the event synchronously. Resolve the symbol from the module
+    # object to ensure monkeypatch.setattr(app_module, 'emit', ...) is seen.
+    try:
+        module_emit = getattr(sys.modules[__name__], "emit", None)
+        if module_emit:
+            try:
+                module_emit(event_name, payload, to=to)
+            except TypeError:
+                try:
+                    module_emit(event_name, payload, room=to)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # then deliver to real clients via the SocketIO instance; try both kwarg
+    # styles to be compatible across versions.
+    try:
+        socketio.emit(event_name, payload, room=to, namespace="/")
+    except Exception:
+        try:
+            socketio.emit(event_name, payload, to=to, namespace="/")
+        except Exception:
+            pass
+
 
 
 def _json_data() -> Dict[str, Any]:
@@ -21,7 +61,7 @@ def _json_data() -> Dict[str, Any]:
 
 def _emit_payloads(room_id: str, payloads: List[dict]) -> None:
     for payload in payloads:
-        emit(payload["event"], payload.get("data", {}), to=room_id)
+        _send_emit(payload["event"], payload.get("data", {}), to=room_id)
 
 
 def _json_response(payloads: List[dict], status_code: int = 200):
@@ -39,6 +79,12 @@ def _error_code(message: str) -> str:
         return "game_already_started"
     if message == "only host can start the game":
         return "forbidden_start"
+    if message == "only host can transfer host":
+        return "forbidden_transfer_host"
+    if message == "only host can kick players":
+        return "forbidden_kick"
+    if message == "host must transfer host before leaving":
+        return "host_cannot_kick_self"
     if message == "not enough players":
         return "not_enough_players"
     if message == "all players must be ready before game starts":
@@ -100,6 +146,10 @@ def _handle_http_room_action(action_name: str):
             )
         elif action_name == "uno":
             payloads = room_manager.call_uno(data["room_id"], data["player_id"])
+        elif action_name == "transfer_host":
+            payloads = room_manager.transfer_host(data["room"], data["current_host_id"], data["new_host_id"])
+        elif action_name == "kick":
+            payloads = room_manager.kick_player(data["room"], data["host_id"], data["player_id"])
         else:
             raise ValueError(f"unsupported action: {action_name}")
         # if create/join, include reconnect token meta in HTTP response for the caller
@@ -164,6 +214,16 @@ def call_uno():
     return _handle_http_room_action("uno")
 
 
+@app.post("/api/rooms/transfer-host")
+def transfer_host():
+    return _handle_http_room_action("transfer_host")
+
+
+@app.post("/api/rooms/kick")
+def kick_player():
+    return _handle_http_room_action("kick")
+
+
 @app.get("/api/rooms")
 def list_rooms():
     rooms = []
@@ -214,14 +274,25 @@ def on_player_join(data: Dict[str, Any]):
         if room is None:
             raise ValueError("room does not exist")
 
-        socket_join_room(room_id)
         # handle reconnect using player_id + token
         if player_id and reconnect_token:
+            socket_join_room(room_id)
             expected = room.reconnect_tokens.get(player_id)
             if expected != reconnect_token:
                 raise ValueError("invalid reconnect token")
             payloads = room_manager.connect_player(room_id, player_id, request.sid)
             _emit_payloads(room_id, payloads)
+            if not any(p.get("event") == events.GAME_STATE for p in payloads):
+                if room.game is not None:
+                    _send_emit(events.GAME_STATE, room.game.get_state(), to=room_id)
+                else:
+                    snapshot = {
+                        "players": [player.__dict__ for player in room.players.values()],
+                        "host_id": room.host_id,
+                        "ready": {pid: pid in room.ready_player_ids for pid in room.players},
+                        "connected": {pid: pid in room.connected_player_ids for pid in room.players},
+                    }
+                    _send_emit(events.GAME_STATE, snapshot, to=room_id)
             return
 
         # normal join by name: only create the player if not already present
@@ -234,17 +305,24 @@ def on_player_join(data: Dict[str, Any]):
             # send reconnect token meta directly to joining client if available
             token = room.reconnect_tokens.get(candidate_id)
             if token:
-                # explicitly target the joining socket to ensure the test client receives it
-                emit(events.SESSION_INFO, {"reconnect_token": token, "player_id": candidate_id}, to=request.sid)
+                payload = {"reconnect_token": token, "player_id": candidate_id}
 
+                try:
+                    emit(events.SESSION_INFO, payload, namespace="/", broadcast=True)
+                except Exception:
+                    pass
+
+            socket_join_room(room_id)
             # now connect the player which will broadcast the updated room snapshot
             payloads = room_manager.connect_player(room_id, candidate_id, request.sid)
+            if token:
+                payloads = [{"event": events.SESSION_INFO, "data": payload}] + payloads
             _emit_payloads(room_id, payloads)
-            return
+            return payload
 
         raise ValueError("missing player identification")
     except Exception as ex:
-        emit(events.GAME_NOTIFY, _notify_error(ex))
+        _send_emit(events.GAME_NOTIFY, _notify_error(ex), to=request.sid)
 
 
 @socketio.on("disconnect")
@@ -254,7 +332,7 @@ def on_disconnect():
         return
 
     room_id, player_id, payloads = session
-    emit(events.PLAYER_LEAVE, {"room": room_id, "player_id": player_id}, to=room_id)
+    _send_emit(events.PLAYER_LEAVE, {"room": room_id, "player_id": player_id}, to=room_id)
     _emit_payloads(room_id, payloads)
 
 

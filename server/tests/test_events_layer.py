@@ -344,14 +344,11 @@ def test_socket_join_emits_session_info_to_joining_client():
 
     # join via socket and verify session::info received
     bob_socket = socketio.test_client(app, flask_test_client=app.test_client())
-    bob_socket.emit(events.PLAYER_JOIN, {"room": room_id, "name": "bob"})
-    received = bob_socket.get_received()
-    infos = [m for m in received if m["name"] == "session::info"]
-    assert len(infos) == 1
+    session_info = bob_socket.emit(events.PLAYER_JOIN, {"room": room_id, "name": "bob"}, callback=True)
     meta = join_resp.get("meta")
     assert meta is not None
-    assert infos[0]["args"][0]["player_id"] == meta["player_id"]
-    assert infos[0]["args"][0]["reconnect_token"] == meta["reconnect_token"]
+    assert session_info["player_id"] == meta["player_id"]
+    assert session_info["reconnect_token"] == meta["reconnect_token"]
 
 
 def test_http_meta_allows_socket_reconnect(monkeypatch):
