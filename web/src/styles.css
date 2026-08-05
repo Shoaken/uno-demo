@@ -1,0 +1,184 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, system-ui, sans-serif;
+  background: #f5f7fb;
+  color: #102a43;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.panel {
+  background: white;
+  border-radius: 18px;
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.08);
+  padding: 24px;
+  margin-bottom: 20px;
+}
+
+.heading {
+  margin: 0 0 18px;
+  font-size: 28px;
+}
+
+.subheading {
+  margin: 0 0 12px;
+  color: #486581;
+}
+
+.label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.input,
+.select,
+.button,
+.button-small {
+  display: block;
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid #d9e2ec;
+  background: white;
+  color: #102a43;
+  padding: 12px 14px;
+  font-size: 15px;
+}
+
+.input:focus,
+.select:focus {
+  outline: none;
+  border-color: #627d98;
+  box-shadow: 0 0 0 3px rgba(99, 123, 153, 0.14);
+}
+
+.button {
+  margin-top: 12px;
+  cursor: pointer;
+  font-weight: 700;
+  background: #0f62fe;
+  color: white;
+  border: none;
+}
+
+.button-small {
+  display: inline-flex;
+  width: auto;
+  margin-right: 10px;
+  margin-top: 10px;
+}
+
+.button-secondary {
+  background: #f4f7fb;
+  color: #102a43;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+.status-online {
+  background: #e7f5ff;
+  color: #0f62fe;
+}
+
+.status-offline {
+  background: #ffe3e3;
+  color: #b7280d;
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.card-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.card-tile {
+  border-radius: 14px;
+  padding: 16px;
+  text-align: center;
+  background: #eef6ff;
+  border: 1px solid #d9e2ec;
+}
+
+.card-tile.wild {
+  background: #111827;
+  color: white;
+}
+
+.card-tile strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.toast {
+  margin-top: 10px;
+  padding: 14px;
+  border-radius: 14px;
+  background: #fff4e5;
+  border: 1px solid #f0c36d;
+}
+
+.small-note {
+  color: #627d98;
+  font-size: 14px;
+}
+
+.player-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #f8fbff;
+  border: 1px solid #d9e2ec;
+}
+
+.player-row strong {
+  display: block;
+}
+
+.action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.button-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
