@@ -65,8 +65,8 @@ This repository is a teaching project for teamwork and realistic code delivery. 
 	- From `server/`, start the app with `make dev`.
 	- Run backend tests with `pytest`.
 - Frontend development:
-	- From `web/`, install dependencies with `pnpm install`.
-	- From `web/`, start the frontend with `pnpm run dev`.
+	- From `web/`, install dependencies with `npm install`.
+	- From `web/`, start the frontend with `npm run dev`.
 	- Use the frontend test and lint scripts defined in `web/package.json` when they are available.
 
 ## Collaboration workflow
