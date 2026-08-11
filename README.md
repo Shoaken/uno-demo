@@ -29,6 +29,30 @@ Test dependency:
 
 - pytest
 
+## Frontend Dependency Baseline
+
+Frontend dependencies currently used by the web app:
+
+- react
+- react-dom
+- socket.io-client
+
+Frontend development and test dependencies:
+
+- @vitejs/plugin-react
+- typescript
+- vite
+- vitest
+- jsdom
+- @testing-library/react
+
+Frontend package management:
+
+- install dependencies from `uno-main/web` with `npm install`
+- run the frontend with `npm run dev`
+- run frontend tests with `npm test`
+- build the frontend with `npm run build`
+
 ## Project Framework Overview
 
 Monorepo-level layout:
@@ -48,10 +72,12 @@ Backend structure:
 
 Frontend structure:
 
-- src/pages: route-level pages (home, play, won)
-- src/components: reusable UI components
-- src/lib: API, socket, and client-side state helpers
-- src/types: shared TypeScript types
+- src/App.tsx: main application shell and screen switching
+- src/lib: API and socket helpers
+- src/types.ts: shared TypeScript types
+- src/main.tsx: application entry point
+- src/styles.css: global styling
+- src/App.test.tsx: frontend contract tests
 
 ## Notes
 
