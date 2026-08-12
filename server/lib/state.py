@@ -154,6 +154,12 @@ class RoomManager:
             return None
 
         room.connected_player_ids.discard(player_id)
+
+        if room.host_id == player_id and room.players:
+            remaining_players = [pid for pid in room.players if pid != player_id]
+            if remaining_players:
+                room.host_id = remaining_players[0]
+
         self._persist_room(room_id)
         return room_id, player_id, self._events_for_room(room)
 

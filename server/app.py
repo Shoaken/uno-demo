@@ -345,6 +345,15 @@ def on_player_ready(data: Dict[str, Any]):
         emit(events.GAME_NOTIFY, _notify_error(ex))
 
 
+@socketio.on(events.PLAYER_TRANSFER_HOST)
+def on_player_transfer_host(data: Dict[str, Any]):
+    try:
+        payloads = room_manager.transfer_host(data["room"], data["current_host_id"], data["new_host_id"])
+        _emit_payloads(data["room"], payloads)
+    except Exception as ex:
+        emit(events.GAME_NOTIFY, _notify_error(ex))
+
+
 @socketio.on(events.GAME_START)
 def on_game_start(data: Dict[str, Any]):
     try:

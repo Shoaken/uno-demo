@@ -48,10 +48,57 @@ Frontend development and test dependencies:
 
 Frontend package management:
 
-- install dependencies from `uno-main/web` with `npm install`
+- install dependencies from `web` with `npm install`
 - run the frontend with `npm run dev`
 - run frontend tests with `npm test`
 - build the frontend with `npm run build`
+
+## Local verification commands
+
+Use these commands to validate the demo-ready flow:
+
+- Run backend tests: `pytest -q`
+- Install frontend dependencies: `cd web && npm install`
+- Run frontend tests: `cd web && npm test`
+- Build the frontend: `cd web && npm run build`
+
+## Demo validation summary
+
+The project is in a presentation-ready state. The verified flow includes:
+
+- backend service startup and health check
+- frontend app startup and HTTP 200 response on the Vite dev server
+- room creation and player join workflow
+- ready/start progression for multiplayer game flow
+- reconnect and recovery behavior after disconnects
+- host transfer and the leave lifecycle
+- safe handling of wild-card chosen-color plays
+
+The critical verification commands completed successfully:
+
+- `pytest -q` → backend regression suite passed
+- `cd web && npm test` → frontend test suite passed
+- `cd web && npm run build` → frontend production build passed
+
+## Presenter handoff
+
+Recommended live demo flow:
+
+1. Open the frontend app in the browser.
+2. Create a room from one player session.
+3. Open a second browser session or tab and join the same room.
+4. Mark both players as ready.
+5. Start the game and play a few cards.
+6. Simulate a disconnect and confirm that the reconnect messaging and recovered state are clear.
+7. Show host transfer on leave or disconnect and confirm room updates are broadcast correctly.
+
+## Demo readiness checklist
+
+- Use the GitHub issue template at `.github/ISSUE_TEMPLATE/demo-ready-checklist.md` to track final validation and demo preparation.
+
+## Ready-to-paste PR description
+
+This project delivers a stable UNO demo with multiplayer room management, reconnect recovery, and clear user feedback during socket disconnects. It includes a validated room lifecycle, host handover flow, wild-card chosen-color handling, and automated regression coverage for the key demo scenarios. The frontend and backend were both verified end-to-end and the app is ready for presentation.
 
 ## Project Framework Overview
 
