@@ -89,6 +89,26 @@ def _prepare_started_room(client, room_id: str, *, allow_immediate_play_after_dr
     return game, start_response
 
 
+def test_http_api_includes_cors_headers_for_browser_requests():
+    client = app.test_client()
+
+    response = client.get("/api/rooms", headers={"Origin": "http://localhost:5173"})
+    assert response.status_code == 200
+    assert response.headers.get("Access-Control-Allow-Origin") == "http://localhost:5173"
+
+    preflight = client.options(
+        "/api/rooms",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Content-Type",
+        },
+    )
+    assert preflight.status_code == 200
+    assert preflight.headers.get("Access-Control-Allow-Origin") == "http://localhost:5173"
+    assert "Access-Control-Allow-Methods" in preflight.headers
+
+
 def test_http_room_lifecycle_exposes_game_state():
     client = app.test_client()
 

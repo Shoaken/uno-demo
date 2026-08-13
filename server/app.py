@@ -13,7 +13,14 @@ from lib.state import RoomManager
 
 app = Flask(__name__)
 app.json.sort_keys = False
-CORS(app, resources={r"/api/*": {"origins": "*"}, r"/healthz": {"origins": "*"}})
+CORS(
+    app,
+    resources={
+        r"/api/*": {"origins": "*"},
+        r"/healthz": {"origins": "*"},
+    },
+    supports_credentials=True,
+)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 room_manager = RoomManager()
 # preserve reference to the original flask_socketio emit implementation
