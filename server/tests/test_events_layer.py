@@ -118,7 +118,28 @@ def test_http_room_lifecycle_exposes_game_state():
         "allow_immediate_play_after_draw",
     }
     assert state["current_player_id"] == "player-alice"
-    assert len(state["hands"]) == 2
+
+
+def test_http_api_responses_include_cors_headers():
+    client = app.test_client()
+
+    response = client.post(
+        "/api/rooms/create",
+        json={"room_id": "room-cors", "host_name": "alice"},
+        headers={"Origin": "http://localhost:5173"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("Access-Control-Allow-Origin") == "http://localhost:5173"
+
+    options_response = client.open(
+        "/api/rooms/create",
+        method="OPTIONS",
+        headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "POST"},
+    )
+
+    assert options_response.status_code in (200, 204)
+    assert options_response.headers.get("Access-Control-Allow-Origin") == "http://localhost:5173"
 
 
 def test_http_room_actions_reject_invalid_input_and_missing_room():

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room as socket_join_room
 import sys
 
@@ -12,6 +13,7 @@ from lib.state import RoomManager
 
 app = Flask(__name__)
 app.json.sort_keys = False
+CORS(app, resources={r"/api/*": {"origins": "*"}, r"/healthz": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 room_manager = RoomManager()
 # preserve reference to the original flask_socketio emit implementation
