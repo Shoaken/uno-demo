@@ -170,6 +170,22 @@ body {
   display: block;
 }
 
+.player-name-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-uno-pending {
+  background: #fff4e5;
+  color: #8a4b00;
+}
+
+.status-uno-called {
+  background: #e6fcf5;
+  color: #0b6b4b;
+}
+
 .action-bar {
   display: flex;
   flex-wrap: wrap;

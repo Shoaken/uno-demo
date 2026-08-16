@@ -39,6 +39,7 @@ class Card:
 
 class GameOverReason(str, Enum):
     WON = "won"
+    LAST_PLAYER_REMAINING = "last_player_remaining"
 
 
 class Game:
@@ -140,8 +141,7 @@ class Game:
 
         self.player_drew_this_turn = False
         self.last_drawn_card_id = None
-        if len(self.hands[player_id]) != 1:
-            self.uno_called[player_id] = False
+        self._reset_uno_state_if_player_is_not_on_one_card(player_id)
         return drawn_cards
 
     def _resolve_pending_uno_penalty(self) -> None:
@@ -156,6 +156,15 @@ class Game:
         if len(self.hands[pending_player_id]) == 1:
             self.pending_uno_player_id = None
             self._draw_cards(pending_player_id, 2)
+
+    def _reset_uno_state_if_player_has_more_than_one_card(self, player_id: str) -> None:
+        if len(self.hands.get(player_id, [])) != 1:
+            self.uno_called[player_id] = False
+            if self.pending_uno_player_id == player_id:
+                self.pending_uno_player_id = None
+
+    def _reset_uno_state_if_player_is_not_on_one_card(self, player_id: str) -> None:
+        self._reset_uno_state_if_player_has_more_than_one_card(player_id)
 
     def _reshuffle_discard_into_draw_pile(self) -> None:
         if len(self.discard_pile) <= 1:
@@ -189,6 +198,8 @@ class Game:
             raise ValueError("UNO can only be called by the player who has one card")
         if len(self.hands[player_id]) != 1:
             raise ValueError("UNO can only be called when the player has exactly one card")
+        if self.uno_called.get(player_id, False):
+            raise ValueError("UNO can only be called once")
 
     def _normalize_played_card(self, card: Card, chosen_color: Optional[str]) -> Card:
         if card.is_wild() or card.is_wild_draw_four():
@@ -278,6 +289,7 @@ class Game:
         self.hands[player_id].append(card)
         self.player_drew_this_turn = True
         self.last_drawn_card_id = card.id
+        self._reset_uno_state_if_player_is_not_on_one_card(player_id)
 
         top_card = self.discard_pile[-1]
         playable = self._can_play(player_id, card, top_card)
@@ -322,6 +334,8 @@ class Game:
             self.pending_uno_player_id = None
             return {"reason": GameOverReason.WON.value, "winner": player_id}
 
+        self._reset_uno_state_if_player_is_not_on_one_card(player_id)
+
         advance_steps = 1
         draw_penalty = 0
 
@@ -342,5 +356,46 @@ class Game:
 
         self._apply_uno_penalty_if_needed(player_id)
         self._advance_turn(advance_steps)
+
+        return None
+
+    def remove_player(self, player_id: str) -> Optional[dict]:
+        player_index = next((idx for idx, player in enumerate(self.players) if player.id == player_id), -1)
+        if player_index < 0:
+            raise ValueError("player not in game")
+
+        was_current_player = player_index == self.turn_index
+        remaining_players_before = len(self.players)
+
+        self.players.pop(player_index)
+        self.hands.pop(player_id, None)
+        self.uno_called.pop(player_id, None)
+        if self.pending_uno_player_id == player_id:
+            self.pending_uno_player_id = None
+
+        remaining_players = len(self.players)
+        if remaining_players == 0:
+            self.turn_index = 0
+            self.player_drew_this_turn = False
+            self.last_drawn_card_id = None
+            return None
+
+        if remaining_players == 1:
+            self.turn_index = 0
+            self.player_drew_this_turn = False
+            self.last_drawn_card_id = None
+            return {"reason": GameOverReason.LAST_PLAYER_REMAINING.value, "winner": self.players[0].id}
+
+        if player_index < self.turn_index:
+            self.turn_index -= 1
+        elif was_current_player and self.direction < 0:
+            self.turn_index -= 1
+
+        self.turn_index %= remaining_players
+
+        if was_current_player:
+            # A leaving current player should not leave draw/play constraints behind.
+            self.player_drew_this_turn = False
+            self.last_drawn_card_id = None
 
         return None

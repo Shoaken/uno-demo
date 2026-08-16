@@ -102,6 +102,8 @@ def _error_code(message: str) -> str:
         return "player_taken"
     if message == "player not in room":
         return "player_not_in_room"
+    if message == "invalid reconnect token":
+        return "invalid_reconnect_token"
     if "not player's turn" in message:
         return "not_current_player"
     if message == "card not found in player's hand":

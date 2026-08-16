@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { createRoom, getRoomSnapshot, leaveRoom } from "./lib/api";
 import {
   EVENT_GAME_DRAW,
+  EVENT_GAME_OVER,
+  EVENT_GAME_NOTIFY,
   EVENT_GAME_PLAY,
   EVENT_GAME_ROOM,
   EVENT_GAME_STATE,
@@ -121,6 +123,7 @@ const gameState: GameState = {
 };
 
 beforeEach(() => {
+  cleanup();
   socketHarness.reset();
   localStorage.clear();
   vi.clearAllMocks();
@@ -186,7 +189,10 @@ describe("frontend contract and recovery flow", () => {
 
     socketHarness.handlers.get("disconnect")?.();
 
-    expect(screen.getByText("已断线。刷新页面后会自动尝试恢复会话。")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByText("会话恢复失败，请重新创建或加入房间。")).toBeTruthy();
+    });
+    expect(screen.getByRole("button", { name: "创建房间" })).toBeTruthy();
   });
 
   it("matches the backend lobby and game socket contract", async () => {
@@ -262,7 +268,11 @@ describe("frontend contract and recovery flow", () => {
 
     socketHarness.handlers.get(EVENT_GAME_ROOM)?.(hostRoomSnapshot);
 
-    fireEvent.click(screen.getByRole("button", { name: "退出游戏" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "离开房间" })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "离开房间" }));
 
     await waitFor(() => {
       expect(leaveRoomMock).toHaveBeenCalledWith("room-1", "p-1");
@@ -270,5 +280,201 @@ describe("frontend contract and recovery flow", () => {
 
     expect(localStorage.getItem("uno-demo-session")).toBeNull();
     expect(screen.getByRole("button", { name: "创建房间" })).toBeTruthy();
+  });
+
+  it("shows game over message and disables game actions", async () => {
+    bootstrapSession();
+
+    await waitFor(() => {
+      expect(socketHarness.socket.connect).toHaveBeenCalledTimes(1);
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_ROOM)?.(hostRoomSnapshot);
+    socketHarness.handlers.get(EVENT_GAME_STATE)?.(gameState);
+
+    await waitFor(() => {
+      expect(screen.getByText("游戏进行中")).toBeTruthy();
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_OVER)?.({
+      reason: "won",
+      winner: "p-1",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Alice 获胜，游戏结束。")).toBeTruthy();
+    });
+
+    expect(screen.getByRole("button", { name: "摸牌" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "UNO" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("shows UNO tag next to player after UNO broadcast", async () => {
+    bootstrapSession();
+
+    await waitFor(() => {
+      expect(socketHarness.socket.connect).toHaveBeenCalledTimes(1);
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_ROOM)?.(hostRoomSnapshot);
+    socketHarness.handlers.get(EVENT_GAME_STATE)?.(gameState);
+
+    await waitFor(() => {
+      expect(screen.getByText("游戏进行中")).toBeTruthy();
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_NOTIFY)?.({
+      type: "info",
+      code: "uno_called",
+      player_id: "p-2",
+      message: "Bob 喊了 UNO。",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("UNO!")).toBeTruthy();
+    });
+  });
+
+  it("clears stale UNO status when the player leaves the one-card state", async () => {
+    bootstrapSession();
+
+    await waitFor(() => {
+      expect(socketHarness.socket.connect).toHaveBeenCalledTimes(1);
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_ROOM)?.(hostRoomSnapshot);
+    socketHarness.handlers.get(EVENT_GAME_STATE)?.(gameState);
+
+    await waitFor(() => {
+      expect(screen.getByText("游戏进行中")).toBeTruthy();
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_NOTIFY)?.({
+      type: "info",
+      code: "uno_called",
+      player_id: "p-2",
+      message: "Bob 喊了 UNO。",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("UNO!")).toBeTruthy();
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_STATE)?.({
+      ...gameState,
+      hands: {
+        ...gameState.hands,
+        "p-2": [
+          { id: "c-1", color: "red", value: "5" },
+          { id: "c-2", color: "blue", value: "7" },
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("UNO!")).toBeNull();
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_NOTIFY)?.({
+      type: "info",
+      code: "uno_pending",
+      player_id: "p-2",
+      message: "Bob 只剩 1 张牌，请喊 UNO。",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("UNO?")).toBeTruthy();
+    });
+  });
+
+  it("supports local hand reordering action", async () => {
+    bootstrapSession();
+
+    await waitFor(() => {
+      expect(socketHarness.socket.connect).toHaveBeenCalledTimes(1);
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_ROOM)?.(hostRoomSnapshot);
+    socketHarness.handlers.get(EVENT_GAME_STATE)?.({
+      ...gameState,
+      hands: {
+        ...gameState.hands,
+        "p-1": [
+          { id: "c-1", color: "red", value: "5" },
+          { id: "c-3", color: "blue", value: "1" },
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "整理手牌" })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "整理手牌" }));
+    expect(screen.getByText("整理手牌仅调整你的本地手牌显示顺序，不会改变服务器中的真实牌序。")).toBeTruthy();
+  });
+
+  it("shows last player remaining message when opponent leaves", async () => {
+    bootstrapSession();
+
+    await waitFor(() => {
+      expect(socketHarness.socket.connect).toHaveBeenCalledTimes(1);
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_ROOM)?.(hostRoomSnapshot);
+    socketHarness.handlers.get(EVENT_GAME_STATE)?.(gameState);
+
+    await waitFor(() => {
+      expect(screen.getByText("游戏进行中")).toBeTruthy();
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_OVER)?.({
+      reason: "last_player_remaining",
+      winner: "p-1",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("对手离开，游戏结束（判定胜利）。")).toBeTruthy();
+    });
+  });
+
+  it("exits in-game without calling leave api", async () => {
+    bootstrapSession();
+
+    await waitFor(() => {
+      expect(socketHarness.socket.connect).toHaveBeenCalledTimes(1);
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_ROOM)?.(hostRoomSnapshot);
+    socketHarness.handlers.get(EVENT_GAME_STATE)?.(gameState);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "退出游戏" })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "退出游戏" }));
+
+    expect(leaveRoomMock).not.toHaveBeenCalled();
+    expect(localStorage.getItem("uno-demo-session")).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "创建房间" })).toBeTruthy();
+    });
+  });
+
+  it("resets stale session on invalid reconnect token notify", async () => {
+    bootstrapSession();
+
+    await waitFor(() => {
+      expect(socketHarness.socket.connect).toHaveBeenCalledTimes(1);
+    });
+
+    socketHarness.handlers.get(EVENT_GAME_NOTIFY)?.({
+      type: "error",
+      message: "invalid reconnect token",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "创建房间" })).toBeTruthy();
+    });
   });
 });

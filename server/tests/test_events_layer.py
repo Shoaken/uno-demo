@@ -769,6 +769,183 @@ def test_http_game_over_payload_contains_winner_details():
     assert over == {"reason": GameOverReason.WON.value, "winner": current_player_id}
 
 
+def test_socket_playing_last_card_emits_game_over(monkeypatch):
+    client = app.test_client()
+    room_id = "room-socket-over"
+
+    game, _ = _prepare_started_room(client, room_id, seed=29)
+    current_player_id = game.get_state()["current_player_id"]
+    top_card = game.discard_pile[-1]
+    winning_card = Card(id="socket-winning-card", color=top_card.color, value=top_card.value)
+    game.hands[current_player_id] = [winning_card]
+
+    winner_name = current_player_id.removeprefix("player-")
+    winner_socket = _attach_socket_client(winner_name, room_id)
+    emitted = _capture_emits(monkeypatch)
+
+    winner_socket.emit(
+        events.GAME_PLAY,
+        {"room": room_id, "player_id": current_player_id, "card_id": winning_card.id},
+    )
+
+    state_events = _event_payloads(emitted, events.GAME_STATE)
+    over_events = _event_payloads(emitted, events.GAME_OVER)
+    assert len(state_events) == 1
+    assert len(over_events) == 1
+    assert over_events[0]["to"] == room_id
+    assert over_events[0]["data"] == {"reason": GameOverReason.WON.value, "winner": current_player_id}
+
+
+def test_http_leave_during_active_game_removes_player_from_turn_rotation():
+    client = app.test_client()
+    room_id = "room-active-leave"
+
+    _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+    _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "charlie"})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("alice"), "ready": True})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("bob"), "ready": True})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("charlie"), "ready": True})
+    _http_json(
+        client,
+        "/api/rooms/start",
+        {"room_id": room_id, "started_by_player_id": _player_id("alice"), "hand_size": 2, "seed": 3},
+    )
+
+    game = room_manager.rooms[room_id].game
+    assert game is not None
+    game.turn_index = 1
+    assert game.get_state()["current_player_id"] == _player_id("bob")
+
+    response = _http_json(client, "/api/rooms/leave", {"room_id": room_id, "player_id": _player_id("bob")})
+
+    event_names = [event["event"] for event in response["events"]]
+    assert events.GAME_STATE in event_names
+    assert events.GAME_ROOM in event_names
+    assert _player_id("bob") not in room_manager.rooms[room_id].players
+    assert _player_id("bob") not in game.hands
+    assert game.get_state()["current_player_id"] == _player_id("charlie")
+
+
+def test_http_leave_can_emit_last_player_remaining_game_over():
+    client = app.test_client()
+    room_id = "room-last-player-remaining"
+
+    _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("alice"), "ready": True})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("bob"), "ready": True})
+    _http_json(
+        client,
+        "/api/rooms/start",
+        {"room_id": room_id, "started_by_player_id": _player_id("alice"), "hand_size": 2, "seed": 41},
+    )
+
+    response = _http_json(client, "/api/rooms/leave", {"room_id": room_id, "player_id": _player_id("bob")})
+    game_over_events = [event for event in response["events"] if event["event"] == events.GAME_OVER]
+
+    assert len(game_over_events) == 1
+    assert game_over_events[0]["data"] == {
+        "reason": GameOverReason.LAST_PLAYER_REMAINING.value,
+        "winner": _player_id("alice"),
+    }
+
+
+def test_http_join_reclaims_disconnected_player_during_active_game(monkeypatch):
+    client = app.test_client()
+    room_id = "room-reclaim-active"
+
+    _http_json(client, "/api/rooms/create", {"room_id": room_id, "host_name": "alice"})
+    join_response = _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+    old_token = join_response["meta"]["reconnect_token"]
+
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("alice"), "ready": True})
+    _http_json(client, "/api/rooms/ready", {"room_id": room_id, "player_id": _player_id("bob"), "ready": True})
+    _http_json(
+        client,
+        "/api/rooms/start",
+        {"room_id": room_id, "started_by_player_id": _player_id("alice"), "hand_size": 2, "seed": 13},
+    )
+
+    bob_socket = _attach_socket_client("bob", room_id)
+    bob_socket.disconnect()
+
+    reclaim_response = _http_json(client, "/api/rooms/join", {"room_id": room_id, "player_name": "bob"})
+    new_token = reclaim_response["meta"]["reconnect_token"]
+    assert new_token != old_token
+
+    emitted = _capture_emits(monkeypatch)
+    reconnect_socket = socketio.test_client(app)
+    reconnect_socket.emit(
+        events.PLAYER_JOIN,
+        {"room": room_id, "player_id": _player_id("bob"), "reconnect_token": new_token},
+    )
+
+    room_events = _event_payloads(emitted, events.GAME_ROOM)
+    state_events = _event_payloads(emitted, events.GAME_STATE)
+    assert len(room_events) == 1
+    assert len(state_events) == 1
+    assert room_events[0]["data"]["connected"][_player_id("bob")] is True
+
+
+def test_socket_play_with_one_card_left_emits_uno_pending_notify(monkeypatch):
+    client = app.test_client()
+    room_id = "room-uno-pending"
+
+    game, _ = _prepare_started_room(client, room_id, seed=27)
+    current_player_id = game.get_state()["current_player_id"]
+    top_card = game.discard_pile[-1]
+    play_card = Card(id="uno-pending-play", color=top_card.color, value=top_card.value)
+    keep_card = Card(id="uno-pending-keep", color="red", value="1")
+    game.hands[current_player_id] = [play_card, keep_card]
+
+    current_name = current_player_id.removeprefix("player-")
+    current_socket = _attach_socket_client(current_name, room_id)
+    emitted = _capture_emits(monkeypatch)
+
+    current_socket.emit(
+        events.GAME_PLAY,
+        {"room": room_id, "player_id": current_player_id, "card_id": play_card.id},
+    )
+
+    notify_events = _event_payloads(emitted, events.GAME_NOTIFY)
+    assert len(notify_events) == 1
+    assert notify_events[0]["data"]["code"] == "uno_pending"
+    assert "只剩 1 张牌" in notify_events[0]["data"]["message"]
+
+
+def test_socket_call_uno_emits_uno_called_notify(monkeypatch):
+    client = app.test_client()
+    room_id = "room-uno-called"
+
+    game, _ = _prepare_started_room(client, room_id, seed=33)
+    current_player_id = game.get_state()["current_player_id"]
+    top_card = game.discard_pile[-1]
+    play_card = Card(id="uno-called-play", color=top_card.color, value=top_card.value)
+    keep_card = Card(id="uno-called-keep", color="red", value="1")
+    game.hands[current_player_id] = [play_card, keep_card]
+
+    current_name = current_player_id.removeprefix("player-")
+    current_socket = _attach_socket_client(current_name, room_id)
+    emitted = _capture_emits(monkeypatch)
+
+    current_socket.emit(
+        events.GAME_PLAY,
+        {"room": room_id, "player_id": current_player_id, "card_id": play_card.id},
+    )
+    emitted.clear()
+
+    current_socket.emit(
+        events.GAME_UNO,
+        {"room": room_id, "player_id": current_player_id},
+    )
+
+    notify_events = _event_payloads(emitted, events.GAME_NOTIFY)
+    assert len(notify_events) == 1
+    assert notify_events[0]["data"]["code"] == "uno_called"
+    assert "喊了 UNO" in notify_events[0]["data"]["message"]
+
+
 def test_http_create_and_join_return_reconnect_meta():
     client = app.test_client()
     create_resp = _http_json(client, "/api/rooms/create", {"room_id": "r-meta", "host_name": "alice"})
@@ -941,7 +1118,8 @@ def test_classroom_demo_smoke_flow_create_join_start_play_and_leave():
     assert [event["event"] for event in create_resp["events"]] == [events.GAME_ROOM]
     assert [event["event"] for event in join_resp["events"]] == [events.GAME_ROOM]
     assert [event["event"] for event in start_resp["events"]] == [events.GAME_START, events.GAME_STATE]
-    assert [event["event"] for event in play_resp["events"]] == [events.GAME_STATE]
+    assert [event["event"] for event in play_resp["events"]] == [events.GAME_STATE, events.GAME_NOTIFY]
+    assert play_resp["events"][1]["data"]["code"] == "uno_pending"
 
     _http_json(client, "/api/rooms/leave", {"room_id": room_id, "player_id": _player_id("bob")})
     _http_json(client, "/api/rooms/leave", {"room_id": room_id, "player_id": _player_id("alice")})
