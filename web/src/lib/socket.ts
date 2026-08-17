@@ -11,6 +11,7 @@ export const EVENT_GAME_PLAY = "game::play";
 export const EVENT_GAME_UNO = "game::uno";
 export const EVENT_GAME_ROOM = "game::room";
 export const EVENT_GAME_STATE = "game::state";
+export const EVENT_GAME_OVER = "game::over";
 export const EVENT_GAME_NOTIFY = "game::notify";
 export const EVENT_SESSION_INFO = "session::info";
 export const EVENT_PLAYER_LEAVE = "player::leave";

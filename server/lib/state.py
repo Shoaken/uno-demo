@@ -154,6 +154,12 @@ class RoomManager:
             return None
 
         room.connected_player_ids.discard(player_id)
+
+        if room.host_id == player_id and room.players:
+            remaining_players = [pid for pid in room.players if pid != player_id]
+            if remaining_players:
+                room.host_id = remaining_players[0]
+
         self._persist_room(room_id)
         return room_id, player_id, self._events_for_room(room)
 
@@ -177,12 +183,24 @@ class RoomManager:
         room = self.rooms.get(room_id)
         if room is None:
             raise ValueError("room does not exist")
-        if room.game is not None:
-            raise ValueError("game has already started")
 
         player = Player(id=f"player-{player_name}", name=player_name)
         if player.id in room.players:
-            raise ValueError("player name already taken")
+            if room.game is None:
+                raise ValueError("player name already taken")
+            if player.id in room.connected_player_ids:
+                raise ValueError("player name already taken")
+
+            # Allow reclaiming an existing disconnected player slot, including
+            # in active games where creating a new player is not allowed.
+            import uuid
+
+            room.reconnect_tokens[player.id] = uuid.uuid4().hex
+            self._persist_room(room_id)
+            return self._events_for_room(room)
+
+        if room.game is not None:
+            raise ValueError("game has already started")
 
         room.players[player.id] = player
         # generate reconnect token for new player and return only events
@@ -215,11 +233,20 @@ class RoomManager:
         if player_id not in room.players:
             raise ValueError("player not in room")
 
+        payloads: List[dict] = []
+        if room.game is not None and player_id in {player.id for player in room.game.players}:
+            game_over = room.game.remove_player(player_id)
+            if room.game.players:
+                payloads.append({"event": events.GAME_STATE, "data": room.game.get_state()})
+            if game_over is not None:
+                payloads.append({"event": events.GAME_OVER, "data": game_over})
+
         # remove player
         del room.players[player_id]
         room.ready_player_ids.discard(player_id)
         room.connected_player_ids.discard(player_id)
         room.reconnect_tokens.pop(player_id, None)
+        self._drop_socket_sessions_for_player(room_id, player_id)
 
         # if no players remain, remove room
         if not room.players:
@@ -232,7 +259,7 @@ class RoomManager:
             room.host_id = next(iter(room.players))
 
         self._persist_room(room_id)
-        return self._events_for_room(room)
+        return payloads + self._events_for_room(room)
 
     def transfer_host(self, room_id: str, current_host_id: str, new_host_id: str) -> List[dict]:
         room = self.rooms.get(room_id)
@@ -258,6 +285,14 @@ class RoomManager:
         if player_id == room.host_id:
             raise ValueError("host must transfer host before leaving")
 
+        payloads: List[dict] = []
+        if room.game is not None and player_id in {player.id for player in room.game.players}:
+            game_over = room.game.remove_player(player_id)
+            if room.game.players:
+                payloads.append({"event": events.GAME_STATE, "data": room.game.get_state()})
+            if game_over is not None:
+                payloads.append({"event": events.GAME_OVER, "data": game_over})
+
         del room.players[player_id]
         room.ready_player_ids.discard(player_id)
         room.connected_player_ids.discard(player_id)
@@ -270,7 +305,7 @@ class RoomManager:
             return []
 
         self._persist_room(room_id)
-        return self._events_for_room(room)
+        return payloads + self._events_for_room(room)
 
     def start_game(
         self,
@@ -329,6 +364,19 @@ class RoomManager:
 
         if game_over is not None:
             payload.append({"event": events.GAME_OVER, "data": game_over})
+        elif room.game.pending_uno_player_id == player_id and len(room.game.hands.get(player_id, [])) == 1:
+            player_name = room.players.get(player_id).name if room.players.get(player_id) else player_id
+            payload.append(
+                {
+                    "event": events.GAME_NOTIFY,
+                    "data": {
+                        "type": "info",
+                        "code": "uno_pending",
+                        "player_id": player_id,
+                        "message": f"{player_name} 只剩 1 张牌，请喊 UNO。",
+                    },
+                }
+            )
 
         self._persist_room(room_id)
 
@@ -341,4 +389,16 @@ class RoomManager:
 
         room.game.call_uno(player_id)
         self._persist_room(room_id)
-        return [{"event": events.GAME_STATE, "data": room.game.get_state()}]
+        player_name = room.players.get(player_id).name if room.players.get(player_id) else player_id
+        return [
+            {"event": events.GAME_STATE, "data": room.game.get_state()},
+            {
+                "event": events.GAME_NOTIFY,
+                "data": {
+                    "type": "info",
+                    "code": "uno_called",
+                    "player_id": player_id,
+                    "message": f"{player_name} 喊了 UNO。",
+                },
+            },
+        ]

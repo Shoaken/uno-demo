@@ -173,6 +173,17 @@ def test_winner_triggers_game_over_payload():
     assert game_over == {"reason": GameOverReason.WON.value, "winner": current_player}
 
 
+def test_remove_player_can_end_game_with_last_player_remaining_reason():
+    game = Game(room="r1", players=_make_players(2), hand_size=2, seed=18)
+
+    result = game.remove_player("player-p1")
+
+    assert result == {
+        "reason": GameOverReason.LAST_PLAYER_REMAINING.value,
+        "winner": "player-p0",
+    }
+
+
 def test_game_constructor_validates_bounds():
     try:
         Game(room="r1", players=_make_players(1), hand_size=7)
@@ -465,6 +476,47 @@ def test_call_uno_marks_player_state():
     game.pending_uno_player_id = current_player
     result = game.call_uno(current_player)
 
+    assert result == {"player_id": current_player, "called_uno": True}
+
+
+def test_uno_reset_allows_new_call_after_player_leaves_one_card_state():
+    game = Game(room="r1", players=_make_players(2), hand_size=2, seed=16)
+
+    current_player = game.get_state()["current_player_id"]
+    matching_card = _first_matching_card(game, game.discard_pile[-1])
+    game.hands[current_player] = [matching_card]
+    game.pending_uno_player_id = current_player
+    game.call_uno(current_player)
+
+    game.hands[current_player].append(_first_non_matching_card(game, game.discard_pile[-1]))
+    game._reset_uno_state_if_player_has_more_than_one_card(current_player)
+    assert game.uno_called[current_player] is False
+    assert game.pending_uno_player_id is None
+
+    game.hands[current_player] = [matching_card]
+    game.pending_uno_player_id = current_player
+    result = game.call_uno(current_player)
+
+    assert result == {"player_id": current_player, "called_uno": True}
+
+
+def test_uno_resets_after_drawing_to_two_cards():
+    game = Game(room="r1", players=_make_players(2), hand_size=2, seed=17)
+
+    current_player = game.get_state()["current_player_id"]
+    matching_card = _first_matching_card(game, game.discard_pile[-1])
+    game.hands[current_player] = [matching_card]
+    game.pending_uno_player_id = current_player
+    game.call_uno(current_player)
+
+    game.draw(current_player)
+    assert len(game.hands[current_player]) == 2
+    assert game.uno_called[current_player] is False
+    assert game.pending_uno_player_id is None
+
+    game.hands[current_player] = [matching_card]
+    game.pending_uno_player_id = current_player
+    result = game.call_uno(current_player)
     assert result == {"player_id": current_player, "called_uno": True}
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room as socket_join_room
 import sys
 
@@ -12,6 +13,14 @@ from lib.state import RoomManager
 
 app = Flask(__name__)
 app.json.sort_keys = False
+CORS(
+    app,
+    resources={
+        r"/api/*": {"origins": "*"},
+        r"/healthz": {"origins": "*"},
+    },
+    supports_credentials=True,
+)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 room_manager = RoomManager()
 # preserve reference to the original flask_socketio emit implementation
@@ -93,6 +102,8 @@ def _error_code(message: str) -> str:
         return "player_taken"
     if message == "player not in room":
         return "player_not_in_room"
+    if message == "invalid reconnect token":
+        return "invalid_reconnect_token"
     if "not player's turn" in message:
         return "not_current_player"
     if message == "card not found in player's hand":
@@ -340,6 +351,15 @@ def on_disconnect():
 def on_player_ready(data: Dict[str, Any]):
     try:
         payloads = room_manager.set_ready(data["room"], data["player_id"], bool(data.get("ready", True)))
+        _emit_payloads(data["room"], payloads)
+    except Exception as ex:
+        emit(events.GAME_NOTIFY, _notify_error(ex))
+
+
+@socketio.on(events.PLAYER_TRANSFER_HOST)
+def on_player_transfer_host(data: Dict[str, Any]):
+    try:
+        payloads = room_manager.transfer_host(data["room"], data["current_host_id"], data["new_host_id"])
         _emit_payloads(data["room"], payloads)
     except Exception as ex:
         emit(events.GAME_NOTIFY, _notify_error(ex))

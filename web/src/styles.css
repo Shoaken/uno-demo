@@ -131,11 +131,38 @@ body {
   text-align: center;
   background: #eef6ff;
   border: 1px solid #d9e2ec;
+  color: #102a43;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25);
+}
+
+.card-tile.red {
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  color: #fff;
+  border-color: #991b1b;
+}
+
+.card-tile.blue {
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  color: #fff;
+  border-color: #1e3a8a;
+}
+
+.card-tile.green {
+  background: linear-gradient(135deg, #22c55e, #15803d);
+  color: #fff;
+  border-color: #166534;
+}
+
+.card-tile.yellow {
+  background: linear-gradient(135deg, #facc15, #eab308);
+  color: #1f2937;
+  border-color: #a16207;
 }
 
 .card-tile.wild {
-  background: #111827;
+  background: linear-gradient(135deg, #111827, #374151);
   color: white;
+  border-color: #111827;
 }
 
 .card-tile strong {
@@ -170,6 +197,22 @@ body {
   display: block;
 }
 
+.player-name-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-uno-pending {
+  background: #fff4e5;
+  color: #8a4b00;
+}
+
+.status-uno-called {
+  background: #e6fcf5;
+  color: #0b6b4b;
+}
+
 .action-bar {
   display: flex;
   flex-wrap: wrap;
@@ -181,4 +224,28 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.wild-color-button.red {
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  color: white;
+  border: none;
+}
+
+.wild-color-button.blue {
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  color: white;
+  border: none;
+}
+
+.wild-color-button.green {
+  background: linear-gradient(135deg, #22c55e, #15803d);
+  color: white;
+  border: none;
+}
+
+.wild-color-button.yellow {
+  background: linear-gradient(135deg, #facc15, #eab308);
+  color: #1f2937;
+  border: none;
 }

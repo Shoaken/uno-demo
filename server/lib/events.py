@@ -10,4 +10,5 @@ SESSION_INFO = "session::info"
 
 PLAYER_JOIN = "player::join"
 PLAYER_READY = "player::ready"
+PLAYER_TRANSFER_HOST = "player::transfer-host"
 PLAYER_LEAVE = "player::leave"

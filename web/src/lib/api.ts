@@ -5,7 +5,7 @@ const BASE_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
 async function safeJson(response: Response) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload?.error || payload?.message || "服务器请求失败");
+    throw new Error(payload?.error || payload?.message || "Server request failed");
   }
   return payload;
 }

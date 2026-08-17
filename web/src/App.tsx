@@ -9,6 +9,7 @@ import {
 import {
   buildJoinPayload,
   createSocket,
+  EVENT_GAME_OVER,
   EVENT_GAME_NOTIFY,
   EVENT_GAME_ROOM,
   EVENT_GAME_PLAY,
@@ -28,6 +29,8 @@ interface StoredSession extends SessionMeta {
   roomId: string;
   playerName: string;
 }
+
+type UnoFlag = "pending" | "called";
 
 function getInitialSession(): StoredSession | null {
   try {
@@ -62,11 +65,24 @@ function cardLabel(card: Card) {
   return `${card.color.toUpperCase()} ${card.value}`;
 }
 
-function cardClassName(card: Card) {
+function cardColorClass(card: Card) {
   if (card.color === "black") {
-    return "card-tile wild";
+    return "wild";
   }
-  return "card-tile";
+  return card.color;
+}
+
+function cardClassName(card: Card) {
+  return `card-tile ${cardColorClass(card)}`;
+}
+
+function shuffleIds(ids: string[]) {
+  const result = [...ids];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
+  }
+  return result;
 }
 
 function App() {
@@ -76,10 +92,30 @@ function App() {
   const [room, setRoom] = useState<RoomSnapshot | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [unoFlags, setUnoFlags] = useState<Record<string, UnoFlag>>({});
+  const [handOrder, setHandOrder] = useState<string[] | null>(null);
+  const [winnerId, setWinnerId] = useState<string | null>(null);
+  const [gameOverReason, setGameOverReason] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [roomIdInput, setRoomIdInput] = useState("");
   const [playerNameInput, setPlayerNameInput] = useState("");
   const [wildSelection, setWildSelection] = useState<Card | null>(null);
+
+  const resetStaleSession = (
+    message: string,
+    socketRef?: Socket | null,
+    skipDisconnect: boolean = false
+  ) => {
+    setErrorMessage(message);
+    setSession(null);
+    setRoom(null);
+    setGameState(null);
+    const activeSocket = socketRef ?? socket;
+    if (!skipDisconnect && activeSocket) {
+      activeSocket.disconnect();
+    }
+    setSocket(null);
+  };
 
   const hostId = room?.host_id;
   const isHost = storedSession?.player_id === hostId;
@@ -92,6 +128,22 @@ function App() {
   );
 
   const playerHand = storedSession?.player_id ? gameState?.hands?.[storedSession.player_id] ?? [] : [];
+  const currentPlayerId = storedSession?.player_id ?? "";
+  const isUnoAlreadyCalled = Boolean(currentPlayerId && unoFlags[currentPlayerId] === "called");
+  const canCallUno = Boolean(storedSession && playerHand.length === 1 && !winnerId && !isUnoAlreadyCalled);
+  const playerHandSignature = playerHand.map((card) => card.id).join("|");
+  const displayedHand = useMemo(() => {
+    if (!handOrder) {
+      return playerHand;
+    }
+
+    const cardById = new Map(playerHand.map((card) => [card.id, card]));
+    const orderedCards = handOrder
+      .map((cardId) => cardById.get(cardId))
+      .filter((card): card is Card => Boolean(card));
+    const remainingCards = playerHand.filter((card) => !handOrder.includes(card.id));
+    return [...orderedCards, ...remainingCards];
+  }, [handOrder, playerHand]);
   const { current, others } = useMemo(
     () => partitionPlayers(room?.players ?? [], storedSession?.player_id),
     [room, storedSession?.player_id]
@@ -100,6 +152,10 @@ function App() {
   useEffect(() => {
     setStoredSession(storedSession);
   }, [storedSession]);
+
+  useEffect(() => {
+    setHandOrder(null);
+  }, [playerHandSignature, storedSession?.player_id]);
 
   useEffect(() => {
     if (!storedSession) {
@@ -122,12 +178,19 @@ function App() {
     });
 
     nextSocket.on("disconnect", () => {
+      // If a restored session disconnects before room/game state is recovered,
+      // treat it as a stale session and return to the entry screen.
+      if (storedSession && !room && !gameState) {
+        setConnectionState("disconnected");
+        resetStaleSession("Session recovery failed. Please create or join a room again.", nextSocket, true);
+        return;
+      }
       setConnectionState("disconnected");
     });
 
     nextSocket.on("connect_error", (error) => {
       setConnectionState("disconnected");
-      setErrorMessage(`Socket 连接失败：${error.message || error}`);
+      resetStaleSession(`Socket connection failed: ${error.message || error}`, nextSocket);
     });
 
     nextSocket.on(EVENT_GAME_ROOM, (snapshot: RoomSnapshot) => {
@@ -136,15 +199,69 @@ function App() {
 
     nextSocket.on(EVENT_GAME_STATE, (payload: any) => {
       if (payload && typeof payload === "object" && "hands" in payload) {
-        setGameState(payload as GameState);
+        const nextState = payload as GameState;
+        setGameState(nextState);
+        const maybeWinner = Object.entries(nextState.hands).find(([, cards]) => cards.length === 0);
+        const winner = maybeWinner?.[0] ?? null;
+        setWinnerId(winner);
+        setGameOverReason(winner ? "won" : null);
+        setUnoFlags((previousFlags) => {
+          const nextFlags: Record<string, UnoFlag> = {};
+          for (const playerId of Object.keys(nextState.hands)) {
+            if ((nextState.hands[playerId] ?? []).length === 1 && previousFlags[playerId]) {
+              nextFlags[playerId] = previousFlags[playerId];
+            }
+          }
+          return nextFlags;
+        });
       } else if (payload && typeof payload === "object" && "players" in payload) {
         setRoom(payload as RoomSnapshot);
         setGameState(null);
+        setWinnerId(null);
+        setGameOverReason(null);
+        setUnoFlags({});
       }
     });
 
-    nextSocket.on(EVENT_GAME_NOTIFY, (payload: { message: string }) => {
-      setErrorMessage(payload.message || "服务器返回错误");
+    nextSocket.on(EVENT_GAME_OVER, (payload: { winner?: string; reason?: string }) => {
+      const winner = payload?.winner;
+      if (winner) {
+        setWinnerId(winner);
+        setGameOverReason(payload.reason || "won");
+      }
+    });
+
+    nextSocket.on(EVENT_GAME_NOTIFY, (payload: { type?: string; message: string; code?: string; player_id?: string }) => {
+      const message = payload.message || "Server returned an error";
+      const normalizedMessage = message.toLowerCase();
+      if (
+        payload.code === "invalid_reconnect_token" ||
+        payload.code === "room_not_found" ||
+        normalizedMessage.includes("invalid reconnect token") ||
+        normalizedMessage.includes("room does not exist")
+      ) {
+        resetStaleSession(message, nextSocket);
+        return;
+      }
+
+      if (payload.type === "info") {
+          if (payload.code === "uno_pending" && payload.player_id) {
+          setUnoFlags((previousFlags) => ({ ...previousFlags, [payload.player_id as string]: "pending" }));
+        }
+        if (payload.code === "uno_called" && payload.player_id) {
+          setUnoFlags((previousFlags) => ({ ...previousFlags, [payload.player_id as string]: "called" }));
+        }
+        if (payload.player_id && payload.type === "info" && payload.code !== "uno_pending" && payload.code !== "uno_called") {
+          setUnoFlags((previousFlags) => {
+            const nextFlags = { ...previousFlags };
+            delete nextFlags[payload.player_id as string];
+            return nextFlags;
+          });
+        }
+        return;
+      }
+
+      setErrorMessage(message);
     });
 
     nextSocket.on(EVENT_SESSION_INFO, (meta: SessionMeta) => {
@@ -163,7 +280,7 @@ function App() {
     return () => {
       nextSocket.disconnect();
     };
-  }, [storedSession, socket]);
+  }, [storedSession?.roomId, storedSession?.player_id]);
 
   useEffect(() => {
     if (storedSession && !room && !gameState && connectionState === "connected") {
@@ -173,19 +290,37 @@ function App() {
     }
   }, [storedSession, room, gameState, connectionState]);
 
+  useEffect(() => {
+    if (!storedSession || room || gameState || connectionState === "connected" || !socket) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      resetStaleSession("Session recovery failed. Please create or join a room again.", socket, true);
+    }, 2000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [storedSession, room, gameState, connectionState, socket]);
+
   const clearError = () => setErrorMessage(null);
 
   const updateSession = (session: StoredSession) => {
     setSession(session);
     setRoom(null);
     setGameState(null);
+    setUnoFlags({});
+    setHandOrder(null);
+    setWinnerId(null);
+    setGameOverReason(null);
     setErrorMessage(null);
   };
 
   const onCreateRoom = async () => {
     clearError();
     if (!roomIdInput || !playerNameInput) {
-      setErrorMessage("请输入房间编号和玩家名称。");
+      setErrorMessage("Please enter a room code and player name.");
       return;
     }
 
@@ -208,7 +343,7 @@ function App() {
   const onJoinRoom = async () => {
     clearError();
     if (!roomIdInput || !playerNameInput) {
-      setErrorMessage("请输入房间编号和玩家名称。");
+      setErrorMessage("Please enter a room code and player name.");
       return;
     }
 
@@ -249,7 +384,7 @@ function App() {
       room: storedSession.roomId,
       started_by_player_id: storedSession.player_id,
       hand_size: 7,
-      seed: 42,
+      seed: Date.now() + Math.floor(Math.random() * 1000000),
     });
   };
 
@@ -265,7 +400,7 @@ function App() {
   };
 
   const onPlayCard = (card: Card) => {
-    if (!socket || !storedSession) {
+    if (!socket || !storedSession || winnerId) {
       return;
     }
     if (card.color === "black") {
@@ -295,7 +430,10 @@ function App() {
   };
 
   const onCallUno = () => {
-    if (!socket || !storedSession) {
+    if (!socket || !storedSession || !canCallUno) {
+      if (isUnoAlreadyCalled) {
+        setErrorMessage("You already called UNO and cannot call it again.");
+      }
       return;
     }
     clearError();
@@ -319,26 +457,65 @@ function App() {
     setSession(null);
     setRoom(null);
     setGameState(null);
+    setUnoFlags({});
+    setHandOrder(null);
     if (socket) {
       socket.disconnect();
       setSocket(null);
     }
+    setWinnerId(null);
+    setGameOverReason(null);
     setIsLoading(false);
+  };
+
+  const onExitGame = () => {
+    clearError();
+    setSession(null);
+    setRoom(null);
+    setGameState(null);
+    setUnoFlags({});
+    setHandOrder(null);
+    setWinnerId(null);
+    setGameOverReason(null);
+    if (socket) {
+      socket.disconnect();
+      setSocket(null);
+    }
+  };
+
+  const onShuffleHand = () => {
+    if (winnerId || playerHand.length < 2) {
+      return;
+    }
+    setHandOrder(shuffleIds(playerHand.map((card) => card.id)));
+  };
+
+  const renderUnoTag = (playerId: string) => {
+    const flag = unoFlags[playerId];
+    if (!flag) {
+      return null;
+    }
+
+    return (
+      <span className={`status-pill ${flag === "called" ? "status-uno-called" : "status-uno-pending"}`}>
+        {flag === "called" ? "UNO!" : "UNO?"}
+      </span>
+    );
   };
 
   const renderStatus = () => (
     <div className="action-bar">
       <span className={`status-pill ${connectionState === "connected" ? "status-online" : "status-offline"}`}>
-        {connectionState === "connected" ? "已连接" : "断开连接"}
+        {connectionState === "connected" ? "Connected" : "Disconnected"}
       </span>
       {storedSession && (
         <span className="small-note">
-          房间: {storedSession.roomId} · 玩家: {storedSession.playerName} · ID: {storedSession.player_id} · reconnect token: {storedSession.reconnect_token}
+          Room: {storedSession.roomId} · Player: {storedSession.playerName} · ID: {storedSession.player_id} · reconnect token: {storedSession.reconnect_token}
         </span>
       )}
       {storedSession && connectionState === "disconnected" && (
         <span className="small-note">
-          已断线。刷新页面后会自动尝试恢复会话。
+          Offline. Refresh the page to automatically restore the session.
         </span>
       )}
     </div>
@@ -347,52 +524,52 @@ function App() {
   const renderEntry = () => (
     <div className="panel">
       <h1 className="heading">UNO Demo</h1>
-      <p className="subheading">创建一个房间或加入一个已有房间，并在浏览器中演示断线重连。</p>
+      <p className="subheading">Create a room or join an existing one and test reconnect behavior in the browser.</p>
 
-      <label className="label">房间编号</label>
+      <label className="label">Room code</label>
       <input
         className="input"
         value={roomIdInput}
         onChange={(event) => setRoomIdInput(event.target.value)}
-        placeholder="例如 room-1"
+        placeholder="e.g. room-1"
       />
-      <label className="label">玩家名称</label>
+      <label className="label">Player name</label>
       <input
         className="input"
         value={playerNameInput}
         onChange={(event) => setPlayerNameInput(event.target.value)}
-        placeholder="例如 alice"
+        placeholder="e.g. alice"
       />
       <div className="action-bar">
         <button className="button" onClick={onCreateRoom} disabled={isLoading}>
-          创建房间
+          Create room
         </button>
         <button className="button button-secondary" onClick={onJoinRoom} disabled={isLoading}>
-          加入房间
+          Join room
         </button>
       </div>
-      <p className="small-note">创建或加入后，页面会自动连接到后端并恢复会话。</p>
+      <p className="small-note">Once you create or join a room, the page connects automatically and restores the session.</p>
     </div>
   );
 
   const renderLobby = () => (
     <div className="panel">
-      <h1 className="heading">房间大厅</h1>
-      <p className="subheading">在这里查看玩家、准备状态，并由房主开始游戏。</p>
+      <h1 className="heading">Room lobby</h1>
+      <p className="subheading">Review players, readiness state, and start the game from the host view.</p>
 
       <div className="grid">
         <div className="player-row">
           <div>
-            <strong>房主</strong>
+            <strong>Host</strong>
             <span>{room?.players.find((player) => player.id === room.host_id)?.name || room?.host_id}</span>
           </div>
           <button className="button button-small button-secondary" onClick={onLeaveRoom} disabled={isLoading}>
-            离开房间
+            Leave room
           </button>
         </div>
 
         <div className="panel">
-          <h2 className="subheading">玩家列表</h2>
+          <h2 className="subheading">Players</h2>
           {room?.players.map((player) => (
             <div key={player.id} className="player-row">
               <div>
@@ -401,10 +578,10 @@ function App() {
               </div>
               <div className="action-bar">
                 <span className={`status-pill ${room.connected[player.id] ? "status-online" : "status-offline"}`}>
-                  {room.connected[player.id] ? "在线" : "离线"}
+                  {room.connected[player.id] ? "Online" : "Offline"}
                 </span>
                 <span className={`status-pill ${room.ready[player.id] ? "status-online" : "status-offline"}`}>
-                  {room.ready[player.id] ? "已准备" : "未准备"}
+                  {room.ready[player.id] ? "Ready" : "Not ready"}
                 </span>
               </div>
             </div>
@@ -412,21 +589,21 @@ function App() {
         </div>
 
         <div className="panel">
-          <h2 className="subheading">当前玩家</h2>
-          <p className="small-note">{current ? current.name : "未知玩家"}</p>
+          <h2 className="subheading">Current player</h2>
+          <p className="small-note">{current ? current.name : "Unknown player"}</p>
           <button className="button" onClick={onToggleReady}>
-            {currentReady ? "取消准备" : "准备"}
+            {currentReady ? "Cancel ready" : "Ready"}
           </button>
           {isHost && (
             <button className="button button-secondary" onClick={onStartGame} disabled={!canStart}>
-              开始游戏
+              Start game
             </button>
           )}
           <div className="small-note">
-            {isHost ? "你是房主。" : "等待房主开始游戏。"}
+            {isHost ? "You are the host." : "Waiting for the host to start the game."}
           </div>
           <div className="small-note">
-            断线后刷新页面，应用会自动使用当前会话恢复房间状态。
+            Refresh after disconnecting and the app will restore the room using the current session.
           </div>
         </div>
       </div>
@@ -435,70 +612,92 @@ function App() {
 
   const renderGameBoard = () => (
     <div className="panel">
-      <h1 className="heading">游戏进行中</h1>
-      <p className="subheading">请按照规则出牌、摸牌或喊UNO。</p>
+      <h1 className="heading">Game in progress</h1>
+      <p className="subheading">Play a card, draw, or call UNO according to the rules.</p>
 
       <div className="grid">
         <div className="player-row">
           <div>
-            <strong>当前回合</strong>
+            <strong>Current turn</strong>
             <span>
               {room?.players.find((player) => player.id === gameState?.current_player_id)?.name ||
                 gameState?.current_player_id}
             </span>
           </div>
           <div>
-            <strong>你的手牌</strong>
-            <span>{playerHand.length} 张</span>
+            <strong>Your hand</strong>
+            <span>{playerHand.length} cards</span>
           </div>
         </div>
 
+        {winnerId && (
+          <div className="toast">
+            {gameOverReason === "last_player_remaining"
+              ? "The opponent left, so the game ended and you were awarded the win."
+              : `${room?.players.find((player) => player.id === winnerId)?.name || winnerId} wins. Game over.`}
+          </div>
+        )}
+
         <div className="panel">
-          <h2 className="subheading">弃牌堆顶牌</h2>
+          <h2 className="subheading">Discard pile</h2>
           <div className={cardClassName(gameState!.top_card)}>
             <strong>{cardLabel(gameState!.top_card)}</strong>
           </div>
         </div>
 
         <div className="panel">
-          <h2 className="subheading">你的手牌</h2>
+          <h2 className="subheading">Your hand</h2>
           <div className="card-list">
-            {playerHand.map((card) => (
-              <button key={card.id} type="button" className={cardClassName(card)} onClick={() => onPlayCard(card)}>
+            {displayedHand.map((card) => (
+              <button
+                key={card.id}
+                type="button"
+                className={cardClassName(card)}
+                onClick={() => onPlayCard(card)}
+                disabled={Boolean(winnerId)}
+              >
                 <strong>{cardLabel(card)}</strong>
-                <span className="small-note">点击出牌</span>
+                <span className="small-note">Play card</span>
               </button>
             ))}
           </div>
         </div>
 
         <div className="panel">
-          <h2 className="subheading">操作</h2>
+          <h2 className="subheading">Actions</h2>
           <div className="button-group">
-            <button className="button" onClick={onDrawCard}>
-              摸牌
+            <button className="button" onClick={onDrawCard} disabled={Boolean(winnerId)}>
+              Draw
             </button>
-            <button className="button button-secondary" onClick={onCallUno}>
+            <button className="button button-secondary" onClick={onShuffleHand} disabled={Boolean(winnerId) || playerHand.length < 2}>
+              Shuffle hand
+            </button>
+            <button className="button button-secondary" onClick={onCallUno} disabled={!canCallUno}>
               UNO
             </button>
-            <button className="button button-secondary" onClick={onLeaveRoom} disabled={isLoading}>
-              退出游戏
+            <button className="button button-secondary" onClick={onExitGame} disabled={isLoading}>
+              Exit game
             </button>
           </div>
-          <p className="small-note">如果你断开连接，刷新页面后会自动恢复会话并尽量返回当前游戏。</p>
-          <p className="small-note">当前 reconnect token 已保存于本地，重连时无需手动输入。</p>
+          <p className="small-note">UNO is only available when you have exactly 1 card left and can be called only once.</p>
+          <p className="small-note">Shuffling only reorders the local display, not the server-side card order.</p>
+          <p className="small-note">If you disconnect, refreshing the page will restore the session and return you to the current game.</p>
+          <p className="small-note">The current reconnect token is saved locally, so no manual input is needed when reconnecting.</p>
         </div>
 
         <div className="panel">
-          <h2 className="subheading">其他玩家手牌数量</h2>
+          <h2 className="subheading">Other players</h2>
           {others.map((player) => (
             <div key={player.id} className="player-row">
               <div>
-                <strong>{player.name}</strong>
-                <span className="small-note">{gameState?.hands[player.id]?.length ?? 0} 张</span>
+                <div className="player-name-line">
+                  <strong>{player.name}</strong>
+                  {renderUnoTag(player.id)}
+                </div>
+                <span className="small-note">{gameState?.hands[player.id]?.length ?? 0} cards</span>
               </div>
               <span className={`status-pill ${room?.connected[player.id] ? "status-online" : "status-offline"}`}>
-                {room?.connected[player.id] ? "在线" : "离线"}
+                {room?.connected[player.id] ? "Online" : "Offline"}
               </span>
             </div>
           ))}
@@ -514,10 +713,10 @@ function App() {
       {!storedSession && renderEntry()}
       {storedSession && room && !gameState && renderLobby()}
       {storedSession && gameState && renderGameBoard()}
-      {!storedSession && <div className="small-note">后端地址: {import.meta.env.VITE_BACKEND_URL || "http://localhost:5000"}</div>}
+      {!storedSession && <div className="small-note">Backend URL: {import.meta.env.VITE_BACKEND_URL || "http://localhost:5000"}</div>}
       {wildSelection && (
         <div className="panel">
-          <h2 className="subheading">选择野牌颜色</h2>
+          <h2 className="subheading">Choose a wild-card color</h2>
           <div className="button-group">
             {[
               "red",
@@ -527,14 +726,14 @@ function App() {
             ].map((color) => (
               <button
                 key={color}
-                className="button button-secondary"
+                className={`button wild-color-button ${color}`}
                 onClick={() => onChooseWildColor(color)}
               >
                 {color}
               </button>
             ))}
           </div>
-          <div className="small-note">请选择野牌的颜色以完成出牌操作。</div>
+          <div className="small-note">Select a color for the wild card to complete the move.</div>
         </div>
       )}
     </div>
